@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:Spectral-Lifter-plus}",
+            "name": "Debug SpectralLifter",
+            "target": "SpectralLifter",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug SpectralLifter"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:Spectral-Lifter-plus}",
+            "name": "Release SpectralLifter",
+            "target": "SpectralLifter",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release SpectralLifter"
+        }
+    ]
+}
