@@ -1,4 +1,5 @@
 import AppKit
+import Charts
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -19,10 +20,16 @@ struct ContentView: View {
                 inputSection
                 outputSection
                 masteringSection
-                previewSection
+                PreviewPanelView(
+                    preview: preview,
+                    inputFileURL: job.inputFile,
+                    correctedFileURL: job.hasExistingOutput ? job.outputFile : nil,
+                    masteredFileURL: job.hasExistingMasteredOutput ? job.masteredOutputFile : nil
+                )
                 correctionActionSection
                 masteringActionSection
                 progressSection
+                spectrogramSection
                 metricsSection
                 logSection
             }
@@ -508,68 +515,83 @@ struct ContentView: View {
             Text("補正")
                 .font(.headline)
 
-            HStack(spacing: 12) {
-                Button(job.isProcessing ? "補正中..." : "補正を実行") {
-                    startCorrectionProcessing()
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(job.inputFile == nil || job.isProcessing || job.isMastering)
-
-                Button("補正を書き出し") {
-                    exportCorrectedAudio()
-                }
-                .disabled(!job.hasExistingOutput || job.isProcessing)
-
-                Button("補正プレビューを開く") {
+            actionButtonRow(
+                primaryTitle: job.isProcessing ? "補正中..." : "補正を実行",
+                onPrimary: startCorrectionProcessing,
+                primaryDisabled: job.inputFile == nil || job.isProcessing || job.isMastering,
+                exportTitle: "補正を書き出し",
+                onExport: exportCorrectedAudio,
+                exportDisabled: !job.hasExistingOutput || job.isProcessing,
+                previewTitle: "プレビューを開く",
+                onPreview: {
                     guard let outputFile = job.outputFile else { return }
                     NSWorkspace.shared.open(outputFile)
-                }
-                .disabled(!job.hasExistingOutput || job.isProcessing)
-
-                Spacer()
-
-                VStack(alignment: .trailing, spacing: 4) {
-                    Text(job.statusMessage)
-                        .foregroundStyle(correctionStatusColor)
-                    Text(job.isAnalyzingMetrics ? "比較を更新中" : "試聴状態は上の試聴比較に表示します")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
+                },
+                previewDisabled: !job.hasExistingOutput || job.isProcessing,
+                statusText: job.statusMessage,
+                statusColor: correctionStatusColor,
+                captionText: job.isAnalyzingMetrics ? "比較を更新中" : "試聴状態は上の試聴比較に表示します"
+            )
         }
     }
 
     private var masteringActionSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("独立マスタリング")
+            Text("マスタリング")
                 .font(.headline)
 
-            HStack(spacing: 12) {
-                Button(job.isMastering ? "マスタリング中..." : "マスタリングを実行") {
-                    startMasteringProcessing()
-                }
-                .disabled(!job.hasExistingOutput || job.isMastering || job.isProcessing)
-
-                Button("最終版を書き出し") {
-                    exportMasteredAudio()
-                }
-                .disabled(!job.hasExistingMasteredOutput || job.isMastering)
-
-                Button("最終版プレビューを開く") {
+            actionButtonRow(
+                primaryTitle: job.isMastering ? "マスタリング中..." : "マスタリングを実行",
+                onPrimary: startMasteringProcessing,
+                primaryDisabled: !job.hasExistingOutput || job.isMastering || job.isProcessing,
+                exportTitle: "最終版を書き出し",
+                onExport: exportMasteredAudio,
+                exportDisabled: !job.hasExistingMasteredOutput || job.isMastering,
+                previewTitle: "プレビューを開く",
+                onPreview: {
                     guard let outputFile = job.masteredOutputFile else { return }
                     NSWorkspace.shared.open(outputFile)
-                }
-                .disabled(!job.hasExistingMasteredOutput || job.isMastering)
+                },
+                previewDisabled: !job.hasExistingMasteredOutput || job.isMastering,
+                statusText: job.masteringStatusMessage,
+                statusColor: masteringStatusColor,
+                captionText: job.isUsingCustomMasteringSettings ? "詳細設定を反映します" : job.selectedMasteringProfile.summary
+            )
+        }
+    }
 
-                Spacer()
+    private func actionButtonRow(
+        primaryTitle: String,
+        onPrimary: @escaping () -> Void,
+        primaryDisabled: Bool,
+        exportTitle: String,
+        onExport: @escaping () -> Void,
+        exportDisabled: Bool,
+        previewTitle: String,
+        onPreview: @escaping () -> Void,
+        previewDisabled: Bool,
+        statusText: String,
+        statusColor: Color,
+        captionText: String
+    ) -> some View {
+        HStack(spacing: 12) {
+            Button(primaryTitle, action: onPrimary)
+                .disabled(primaryDisabled)
 
-                VStack(alignment: .trailing, spacing: 4) {
-                    Text(job.masteringStatusMessage)
-                        .foregroundStyle(masteringStatusColor)
-                    Text(job.isUsingCustomMasteringSettings ? "詳細設定を反映します" : job.selectedMasteringProfile.summary)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+            Button(exportTitle, action: onExport)
+                .disabled(exportDisabled)
+
+            Button(previewTitle, action: onPreview)
+                .disabled(previewDisabled)
+
+            Spacer()
+
+            VStack(alignment: .trailing, spacing: 4) {
+                Text(statusText)
+                    .foregroundStyle(statusColor)
+                Text(captionText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -691,6 +713,94 @@ struct ContentView: View {
                 emptyMessage: "最終版の比較は、マスタリングを実行すると表示されます。"
             )
         }
+    }
+
+    private var spectrogramSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("スペクトログラム")
+                .font(.headline)
+
+            if let input = job.inputSpectrogram {
+                let bounds = combinedSpectrogramBounds(input: input, corrected: job.outputSpectrogram, mastered: job.masteredSpectrogram)
+                HStack(alignment: .top, spacing: 14) {
+                    spectrogramCard(title: "入力", snapshot: input, tint: .blue, bounds: bounds)
+                    spectrogramCard(title: "補正後", snapshot: job.outputSpectrogram ?? .empty, tint: .green, bounds: bounds)
+                    spectrogramCard(title: "最終版", snapshot: job.masteredSpectrogram ?? .empty, tint: .orange, bounds: bounds)
+                }
+            } else {
+                Text("音声を選ぶと、ここに入力・補正後・最終版の時間と帯域の変化が表示されます。")
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func spectrogramCard(title: String, snapshot: SpectrogramSnapshot, tint: Color, bounds: (min: Double, max: Double)) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.headline)
+            if snapshot.cells.isEmpty {
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(Color.secondary.opacity(0.08))
+                    .frame(height: 180)
+                    .overlay {
+                        Text("まだ表示できません")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+            } else {
+                Chart(snapshot.cells) { cell in
+                    RectangleMark(
+                        xStart: .value("時間開始", cell.timeStart),
+                        xEnd: .value("時間終了", cell.timeEnd),
+                        yStart: .value("周波数開始", cell.frequencyStart),
+                        yEnd: .value("周波数終了", cell.frequencyEnd)
+                    )
+                    .foregroundStyle(tint.opacity(spectrogramOpacity(for: cell.levelDB, bounds: bounds)))
+                    .lineStyle(.init(lineWidth: 0))
+                }
+                .chartXAxis {
+                    AxisMarks(values: .automatic(desiredCount: 4))
+                }
+                .chartYAxis {
+                    AxisMarks(values: [100, 1_000, 10_000]) { value in
+                        AxisGridLine()
+                        AxisTick()
+                        AxisValueLabel {
+                            if let frequency = value.as(Double.self) {
+                                Text(frequency >= 1000 ? "\(Int(frequency / 1000))k" : "\(Int(frequency))")
+                            }
+                        }
+                    }
+                }
+                .chartXScale(domain: 0 ... max(snapshot.duration, 0.1))
+                .chartYScale(domain: 80 ... 24_000, type: .log)
+                .chartPlotStyle { plotArea in
+                    plotArea
+                        .background(Color.black.opacity(0.06))
+                        .border(Color.black.opacity(0.08))
+                }
+                .frame(height: 180)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    private func combinedSpectrogramBounds(
+        input: SpectrogramSnapshot,
+        corrected: SpectrogramSnapshot?,
+        mastered: SpectrogramSnapshot?
+    ) -> (min: Double, max: Double) {
+        let snapshots = [input, corrected, mastered].compactMap { $0 }.filter { !$0.cells.isEmpty }
+        let minLevel = snapshots.map(\.minLevelDB).min() ?? -96
+        let maxLevel = snapshots.map(\.maxLevelDB).max() ?? -24
+        return (minLevel, maxLevel)
+    }
+
+    private func spectrogramOpacity(for levelDB: Double, bounds: (min: Double, max: Double)) -> Double {
+        let normalized = max(0, min(1, (levelDB - bounds.min) / max(bounds.max - bounds.min, 1)))
+        return 0.04 + pow(normalized, 0.55) * 0.96
     }
 
     private func comparisonSection(
@@ -880,6 +990,9 @@ struct ContentView: View {
         if job.lastError != nil {
             return .red
         }
+        if job.hasExistingOutput {
+            return .green
+        }
         return .secondary
     }
 
@@ -936,9 +1049,13 @@ struct ContentView: View {
                 async let correctedMetricsTask: AudioMetricSnapshot = Task.detached(priority: .utility) {
                     try AudioComparisonService.analyze(fileURL: outputFile)
                 }.value
+                async let correctedSpectrogramTask: SpectrogramSnapshot = Task.detached(priority: .utility) {
+                    try AudioFileService.makeSpectrogramSnapshot(for: outputFile)
+                }.value
 
                 let correctedSnapshot = try await correctedSnapshotTask
                 let correctedMetrics = try await correctedMetricsTask
+                let correctedSpectrogram = try await correctedSpectrogramTask
 
                 await MainActor.run {
                     job.finishSuccess(outputFile)
@@ -946,6 +1063,7 @@ struct ContentView: View {
                     preview.setPreviewSnapshot(correctedSnapshot, for: .corrected, sourceURL: outputFile)
                     preview.preparePreview(for: nil, target: .mastered)
                     job.finishOutputMetricAnalysis(correctedMetrics)
+                    job.finishOutputSpectrogram(correctedSpectrogram)
                 }
             } catch {
                 await MainActor.run {
@@ -982,14 +1100,19 @@ struct ContentView: View {
                 async let masteredMetricsTask: AudioMetricSnapshot = Task.detached(priority: .utility) {
                     try AudioComparisonService.analyze(fileURL: masteredFile)
                 }.value
+                async let masteredSpectrogramTask: SpectrogramSnapshot = Task.detached(priority: .utility) {
+                    try AudioFileService.makeSpectrogramSnapshot(for: masteredFile)
+                }.value
 
                 let masteredSnapshot = try await masteredSnapshotTask
                 let masteredMetrics = try await masteredMetricsTask
+                let masteredSpectrogram = try await masteredSpectrogramTask
 
                 await MainActor.run {
                     job.finishMasteringSuccess(masteredFile)
                     preview.setPreviewSnapshot(masteredSnapshot, for: .mastered, sourceURL: masteredFile)
                     job.finishMasteredMetricAnalysis(masteredMetrics)
+                    job.finishMasteredSpectrogram(masteredSpectrogram)
                 }
             } catch {
                 await MainActor.run {
@@ -1022,15 +1145,21 @@ struct ContentView: View {
                 let metrics = try await Task.detached(priority: .utility) {
                     try AudioComparisonService.analyze(fileURL: url)
                 }.value
+                let spectrogram = try await Task.detached(priority: .utility) {
+                    try AudioFileService.makeSpectrogramSnapshot(for: url)
+                }.value
 
                 await MainActor.run {
                     switch target {
                     case .input:
                         job.finishInputMetricAnalysis(metrics)
+                        job.finishInputSpectrogram(spectrogram)
                     case .corrected:
                         job.finishOutputMetricAnalysis(metrics)
+                        job.finishOutputSpectrogram(spectrogram)
                     case .mastered:
                         job.finishMasteredMetricAnalysis(metrics)
+                        job.finishMasteredSpectrogram(spectrogram)
                     }
                 }
             } catch {

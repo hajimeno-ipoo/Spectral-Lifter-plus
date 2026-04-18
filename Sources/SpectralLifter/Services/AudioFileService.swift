@@ -6,6 +6,8 @@ enum AudioFileService {
     static let targetSampleRate = 48_000.0
     private static let previewFFTSize = 1024
     private static let previewHopSize = 1024
+    private static let spectrogramTimeBuckets = 72
+    private static let spectrogramFrequencyBuckets = 28
 
     static func loadAudio(from url: URL) throws -> AudioSignal {
         let file = try AVAudioFile(forReading: url)
@@ -84,6 +86,107 @@ enum AudioFileService {
             duration: Double(mono.count) / signal.sampleRate,
             bandLevels: bandLevels,
             bandLevelDBs: bandLevelDBs
+        )
+    }
+
+    static func makeSpectrogramSnapshot(for url: URL) throws -> SpectrogramSnapshot {
+        let signal = try loadAudio(from: url)
+        return makeSpectrogramSnapshot(from: signal)
+    }
+
+    static func makeSpectrogramSnapshot(from signal: AudioSignal) -> SpectrogramSnapshot {
+        let mono = signal.monoMixdown()
+        guard !mono.isEmpty else {
+            return .empty
+        }
+
+        let spectrogram = SpectralDSP.stft(mono, fftSize: previewFFTSize, hopSize: previewHopSize)
+        guard spectrogram.frameCount > 0 else {
+            return .empty
+        }
+
+        let magnitudes = spectrogram.magnitudes()
+        let timeBuckets = min(120, max(1, spectrogram.frameCount))
+        let frequencyBuckets = 56
+        let maxFrequency = signal.sampleRate * 0.5
+        let minFrequency = 80.0
+        let frameGroupSize = max(1, Int(ceil(Double(spectrogram.frameCount) / Double(timeBuckets))))
+        let frequencyStep = signal.sampleRate / Double(spectrogram.fftSize)
+
+        var cells: [SpectrogramCell] = []
+        cells.reserveCapacity(timeBuckets * frequencyBuckets)
+
+        let binEdges: [ClosedRange<Int>] = (0..<frequencyBuckets).map { bucket in
+            let lowerRatio = Double(bucket) / Double(frequencyBuckets)
+            let upperRatio = Double(bucket + 1) / Double(frequencyBuckets)
+            let lowerFrequency = minFrequency * pow(maxFrequency / minFrequency, lowerRatio)
+            let upperFrequency = minFrequency * pow(maxFrequency / minFrequency, upperRatio)
+            let lowerBin = max(0, min(Int(lowerFrequency / frequencyStep), spectrogram.binCount - 1))
+            let upperBin = max(lowerBin, min(Int(upperFrequency / frequencyStep), spectrogram.binCount - 1))
+            return lowerBin...upperBin
+        }
+
+        var maxIntensity = -120.0
+        var rawLevels = Array(repeating: Array(repeating: -120.0, count: frequencyBuckets), count: timeBuckets)
+
+        for timeBucket in 0..<timeBuckets {
+            let startFrame = timeBucket * frameGroupSize
+            let endFrame = min(spectrogram.frameCount, startFrame + frameGroupSize)
+            guard startFrame < endFrame else { continue }
+
+            for frequencyBucket in 0..<frequencyBuckets {
+                let range = binEdges[frequencyBucket]
+                var energy: Float = 0
+                var count: Int = 0
+
+                for frameIndex in startFrame..<endFrame {
+                    for binIndex in range {
+                        let value = magnitudes[frameIndex][binIndex]
+                        energy += value * value
+                        count += 1
+                    }
+                }
+
+                let rms = sqrt(max(Double(energy) / Double(max(count, 1)), 1e-12))
+                let levelDB = 20 * log10(max(rms, 1e-12))
+                rawLevels[timeBucket][frequencyBucket] = levelDB
+                maxIntensity = max(maxIntensity, levelDB)
+            }
+        }
+
+        let floor = max(-96.0, maxIntensity - 58.0)
+        let duration = Double(mono.count) / signal.sampleRate
+
+        for timeBucket in 0..<timeBuckets {
+            for frequencyBucket in 0..<frequencyBuckets {
+                let levelDB = rawLevels[timeBucket][frequencyBucket]
+                let timeStart = duration * Double(timeBucket) / Double(timeBuckets)
+                let timeEnd = duration * Double(timeBucket + 1) / Double(timeBuckets)
+                let lowerFrequency = minFrequency * pow(maxFrequency / minFrequency, Double(frequencyBucket) / Double(frequencyBuckets))
+                let upperFrequency = minFrequency * pow(maxFrequency / minFrequency, Double(frequencyBucket + 1) / Double(frequencyBuckets))
+
+                cells.append(
+                    SpectrogramCell(
+                        id: "\(timeBucket)-\(frequencyBucket)",
+                        timeIndex: timeBucket,
+                        bandIndex: frequencyBucket,
+                        timeStart: timeStart,
+                        timeEnd: timeEnd,
+                        frequencyStart: lowerFrequency,
+                        frequencyEnd: upperFrequency,
+                        levelDB: levelDB
+                    )
+                )
+            }
+        }
+
+        return SpectrogramSnapshot(
+            cells: cells,
+            timeBucketCount: timeBuckets,
+            frequencyBucketCount: frequencyBuckets,
+            duration: duration,
+            minLevelDB: floor,
+            maxLevelDB: maxIntensity
         )
     }
 

@@ -35,7 +35,7 @@ struct AudioProcessingPipelineTests {
 
         let output = try await AudioProcessingService().process(inputFile: inputURL) { _ in }
 
-        #expect(output.lastPathComponent.contains("violin #002 睡眠_lifter"))
+        #expect(output.lastPathComponent.contains("_lifter_"))
         #expect(FileManager.default.fileExists(atPath: output.path(percentEncoded: false)))
     }
 

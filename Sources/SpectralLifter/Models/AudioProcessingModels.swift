@@ -83,3 +83,25 @@ struct LiveBandSample: Sendable, Identifiable {
     let label: String
     let level: Double
 }
+
+struct SpectrogramCell: Sendable, Identifiable {
+    let id: String
+    let timeIndex: Int
+    let bandIndex: Int
+    let timeStart: Double
+    let timeEnd: Double
+    let frequencyStart: Double
+    let frequencyEnd: Double
+    let levelDB: Double
+}
+
+struct SpectrogramSnapshot: Sendable {
+    let cells: [SpectrogramCell]
+    let timeBucketCount: Int
+    let frequencyBucketCount: Int
+    let duration: TimeInterval
+    let minLevelDB: Double
+    let maxLevelDB: Double
+
+    static let empty = SpectrogramSnapshot(cells: [], timeBucketCount: 0, frequencyBucketCount: 0, duration: 0, minLevelDB: -120, maxLevelDB: -120)
+}

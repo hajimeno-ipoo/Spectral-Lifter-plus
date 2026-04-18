@@ -33,6 +33,9 @@ final class ProcessingJob {
     var inputMetrics: AudioMetricSnapshot?
     var outputMetrics: AudioMetricSnapshot?
     var masteredMetrics: AudioMetricSnapshot?
+    var inputSpectrogram: SpectrogramSnapshot?
+    var outputSpectrogram: SpectrogramSnapshot?
+    var masteredSpectrogram: SpectrogramSnapshot?
     var logText = ""
     var masteringLogText = ""
     var statusMessage = "待機中"
@@ -89,6 +92,9 @@ final class ProcessingJob {
         inputMetrics = nil
         outputMetrics = nil
         masteredMetrics = nil
+        inputSpectrogram = nil
+        outputSpectrogram = nil
+        masteredSpectrogram = nil
         logText = ""
         masteringLogText = ""
         statusMessage = "処理待ち"
@@ -114,6 +120,8 @@ final class ProcessingJob {
         completedSteps = []
         masteredOutputFile = outputFile.map { MasteringService.defaultOutputURL(for: $0) }
         masteredMetrics = nil
+        outputSpectrogram = nil
+        masteredSpectrogram = nil
         masteringLogText = ""
         masteringStatusMessage = "補正後に実行できます"
         masteringLastError = nil
@@ -164,6 +172,18 @@ final class ProcessingJob {
     func finishMasteredMetricAnalysis(_ metrics: AudioMetricSnapshot) {
         masteredMetrics = metrics
         isAnalyzingMetrics = false
+    }
+
+    func finishInputSpectrogram(_ snapshot: SpectrogramSnapshot) {
+        inputSpectrogram = snapshot
+    }
+
+    func finishOutputSpectrogram(_ snapshot: SpectrogramSnapshot) {
+        outputSpectrogram = snapshot
+    }
+
+    func finishMasteredSpectrogram(_ snapshot: SpectrogramSnapshot) {
+        masteredSpectrogram = snapshot
     }
 
     func failMetricAnalysis() {

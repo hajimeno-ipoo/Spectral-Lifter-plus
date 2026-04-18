@@ -30,9 +30,18 @@ struct AudioProcessingService {
         let tempDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("SpectralLifterPreview", isDirectory: true)
         try? FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        let sanitizedName = shortPreviewBaseName(from: fileName)
+        let shortID = String(UUID().uuidString.prefix(6)).lowercased()
         return tempDirectory
-            .appendingPathComponent("\(fileName)_lifter_\(UUID().uuidString)")
+            .appendingPathComponent("\(sanitizedName)_lifter_\(shortID)")
             .appendingPathExtension(ext)
+    }
+
+    private static func shortPreviewBaseName(from fileName: String) -> String {
+        let trimmed = fileName
+            .replacingOccurrences(of: " ", with: "_")
+            .replacingOccurrences(of: "/", with: "_")
+        return String(trimmed.prefix(24))
     }
 }
 
