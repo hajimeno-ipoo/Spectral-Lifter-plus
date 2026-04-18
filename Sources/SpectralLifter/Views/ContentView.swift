@@ -308,6 +308,16 @@ struct ContentView: View {
 
                 Spacer()
 
+                Toggle(
+                    "ラウドネス合わせ比較",
+                    isOn: binding(
+                        get: { preview.isLoudnessMatchedComparisonEnabled },
+                        set: { preview.setLoudnessMatchedComparisonEnabled($0) }
+                    )
+                )
+                .toggleStyle(.switch)
+                .controlSize(.small)
+
                 Text("現在: \(preview.comparisonPair.title(for: preview.activeComparisonSide))")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)

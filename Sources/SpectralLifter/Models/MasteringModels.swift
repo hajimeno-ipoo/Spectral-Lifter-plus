@@ -113,6 +113,7 @@ struct MasteringAnalysis: Sendable {
 
 enum AudioComparisonPair: String, CaseIterable, Identifiable {
     case inputVsCorrected
+    case inputVsMastered
     case correctedVsMastered
 
     var id: String { rawValue }
@@ -121,6 +122,8 @@ enum AudioComparisonPair: String, CaseIterable, Identifiable {
         switch self {
         case .inputVsCorrected:
             return "入力 vs 補正後"
+        case .inputVsMastered:
+            return "入力 vs 最終版"
         case .correctedVsMastered:
             return "補正後 vs 最終版"
         }
@@ -130,6 +133,8 @@ enum AudioComparisonPair: String, CaseIterable, Identifiable {
         switch self {
         case .inputVsCorrected:
             return "補正でどれだけ整ったかを聴き比べます"
+        case .inputVsMastered:
+            return "最初の音と最終版をそのまま聴き比べます"
         case .correctedVsMastered:
             return "マスタリングでどれだけ仕上がったかを聴き比べます"
         }
@@ -138,6 +143,8 @@ enum AudioComparisonPair: String, CaseIterable, Identifiable {
     var firstTarget: AudioPreviewTarget {
         switch self {
         case .inputVsCorrected:
+            return .input
+        case .inputVsMastered:
             return .input
         case .correctedVsMastered:
             return .corrected
@@ -148,6 +155,8 @@ enum AudioComparisonPair: String, CaseIterable, Identifiable {
         switch self {
         case .inputVsCorrected:
             return .corrected
+        case .inputVsMastered:
+            return .mastered
         case .correctedVsMastered:
             return .mastered
         }

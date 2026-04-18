@@ -22,6 +22,7 @@ final class AudioPreviewController: NSObject, AVAudioPlayerDelegate {
     var liveBandLevels: [AudioPreviewTarget: [LiveBandSample]] = [:]
     var comparisonPair: AudioComparisonPair = .correctedVsMastered
     var activeComparisonSide: AudioComparisonSide = .a
+    var isLoudnessMatchedComparisonEnabled = false
 
     private var player: AVAudioPlayer?
     private var meterTimer: Timer?
@@ -30,6 +31,7 @@ final class AudioPreviewController: NSObject, AVAudioPlayerDelegate {
     private var playbackPositions: [AudioPreviewTarget: TimeInterval] = [:]
     private var playbackProgresses: [AudioPreviewTarget: Double] = [:]
     private var playbackStates: [AudioPreviewTarget: AudioPlaybackState] = [:]
+    private var integratedLoudnessByTarget: [AudioPreviewTarget: Float] = [:]
     private let meterInterval: TimeInterval = 0.05
     private let smoothingFactor = 0.20
 
@@ -48,6 +50,7 @@ final class AudioPreviewController: NSObject, AVAudioPlayerDelegate {
             player?.delegate = self
             player?.isMeteringEnabled = true
             player?.prepareToPlay()
+            player?.volume = playbackVolume(for: target)
             let resumeTime = playbackPositions[target] ?? 0
             if let player {
                 player.currentTime = min(resumeTime, max(player.duration - 0.05, 0))
@@ -87,6 +90,12 @@ final class AudioPreviewController: NSObject, AVAudioPlayerDelegate {
         if let activeTarget, !pair.targets.contains(activeTarget) {
             stopPlayback()
         }
+        refreshPlaybackVolumeIfNeeded()
+    }
+
+    func setLoudnessMatchedComparisonEnabled(_ isEnabled: Bool) {
+        isLoudnessMatchedComparisonEnabled = isEnabled
+        refreshPlaybackVolumeIfNeeded()
     }
 
     func comparisonTarget(for side: AudioComparisonSide) -> AudioPreviewTarget {
@@ -155,6 +164,7 @@ final class AudioPreviewController: NSObject, AVAudioPlayerDelegate {
             previewSourceURLs[target] = nil
             previewSnapshots[target] = nil
             liveBandLevels[target] = nil
+            integratedLoudnessByTarget[target] = nil
             playbackPositions[target] = 0
             playbackProgresses[target] = 0
             playbackStates[target] = .stopped
@@ -171,14 +181,25 @@ final class AudioPreviewController: NSObject, AVAudioPlayerDelegate {
         previewSourceURLs[target] = url
         previewSnapshots[target] = nil
         liveBandLevels[target] = nil
+        integratedLoudnessByTarget[target] = nil
 
         previewTasks[target] = Task {
-            let snapshot = try? await Task.detached(priority: .utility) {
+            async let snapshotTask: AudioPreviewSnapshot = Task.detached(priority: .utility) {
                 try AudioFileService.makePreviewSnapshot(for: url)
             }.value
+            async let loudnessTask: Float = Task.detached(priority: .utility) {
+                let signal = try AudioFileService.loadAudio(from: url)
+                return MasteringAnalysisService.integratedLoudness(signal: signal)
+            }.value
+
+            let snapshot = try? await snapshotTask
+            let loudness = try? await loudnessTask
 
             guard !Task.isCancelled else { return }
             guard previewSourceURLs[target] == url else { return }
+            if let loudness {
+                integratedLoudnessByTarget[target] = loudness
+            }
             if let snapshot {
                 setPreviewSnapshot(snapshot, for: target, sourceURL: url)
             }
@@ -385,6 +406,30 @@ final class AudioPreviewController: NSObject, AVAudioPlayerDelegate {
         player?.stop()
         player = nil
         self.activeTarget = nil
+    }
+
+    private func refreshPlaybackVolumeIfNeeded() {
+        guard let activeTarget else { return }
+        player?.volume = playbackVolume(for: activeTarget)
+    }
+
+    private func playbackVolume(for target: AudioPreviewTarget) -> Float {
+        guard isLoudnessMatchedComparisonEnabled, isInComparisonPair(target) else {
+            return 1.0
+        }
+
+        let pairedTarget = comparisonPair.firstTarget == target ? comparisonPair.secondTarget : comparisonPair.firstTarget
+        guard
+            let currentLoudness = integratedLoudnessByTarget[target],
+            let pairedLoudness = integratedLoudnessByTarget[pairedTarget]
+        else {
+            return 1.0
+        }
+
+        // Match by attenuating the louder side only, so comparison playback stays safe.
+        let targetLoudness = min(currentLoudness, pairedLoudness)
+        let attenuationDB = min(0, targetLoudness - currentLoudness)
+        return max(0.1, min(1.0, powf(10, attenuationDB / 20)))
     }
 
     private func syncComparisonPositionIfNeeded(for target: AudioPreviewTarget) {
