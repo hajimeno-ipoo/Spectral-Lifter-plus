@@ -67,4 +67,19 @@ struct ProcessingJobTests {
         #expect(job.masteringActiveStep == nil)
         #expect(job.masteredOutputFile == output)
     }
+
+    @Test
+    func applyingProfileResetsEditableSettings() {
+        let job = ProcessingJob()
+
+        job.updateMasteringSettings { settings in
+            settings.targetLoudness = -11
+        }
+        #expect(job.isUsingCustomMasteringSettings)
+
+        job.applyMasteringProfile(.natural)
+
+        #expect(job.isUsingCustomMasteringSettings == false)
+        #expect(job.editableMasteringSettings == MasteringProfile.natural.settings)
+    }
 }

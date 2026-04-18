@@ -27,6 +27,23 @@ struct MasteringPipelineTests {
         #expect(samples.map { abs($0) }.max() ?? 0 <= 1.01)
     }
 
+    @Test
+    func masteringAcceptsEditableSettings() async throws {
+        let tempDirectory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        let inputURL = tempDirectory.appending(path: "song_lifter.wav")
+
+        try makeTestTone(at: inputURL)
+
+        var settings = MasteringProfile.streaming.settings
+        settings.targetLoudness = -13.2
+        settings.stereoWidth = 1.15
+
+        let output = try await MasteringService().process(inputFile: inputURL, settings: settings) { _ in }
+
+        #expect(FileManager.default.fileExists(atPath: output.path()))
+    }
+
     private func makeTestTone(at url: URL) throws {
         let sampleRate = 48_000.0
         let frameCount = Int(sampleRate * 3)
@@ -42,7 +59,10 @@ struct MasteringPipelineTests {
             right[index] = Float(sin(2 * Double.pi * 220 * t + 0.12) * 0.08 + sin(2 * Double.pi * 7_600 * t) * 0.018)
         }
 
-        let file = try AVAudioFile(forWriting: url, settings: format.settings)
+        let file = try AVAudioFile(
+            forWriting: url,
+            settings: AudioFileService.interleavedFileSettings(sampleRate: sampleRate, channels: 2)
+        )
         try file.write(from: buffer)
     }
 }

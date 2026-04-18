@@ -12,5 +12,7 @@ struct MasteringProfileTests {
         #expect(streaming.targetLoudness < forward.targetLoudness)
         #expect(natural.saturationAmount < forward.saturationAmount)
         #expect(streaming.stereoWidth >= natural.stereoWidth)
+        #expect(natural.multibandCompression.low.ratio < forward.multibandCompression.low.ratio)
+        #expect(streaming.multibandCompression.high.attackMs < natural.multibandCompression.high.attackMs)
     }
 }

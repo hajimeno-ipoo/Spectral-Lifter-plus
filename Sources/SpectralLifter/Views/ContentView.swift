@@ -28,6 +28,9 @@ struct ContentView: View {
             .padding(24)
         }
         .frame(minWidth: 1_060, minHeight: 860)
+        .onChange(of: job.selectedMasteringProfile) { _, newValue in
+            job.applyMasteringProfile(newValue)
+        }
     }
 
     private var header: some View {
@@ -104,21 +107,227 @@ struct ContentView: View {
                         .font(.subheadline.weight(.semibold))
                     Text(job.selectedMasteringProfile.summary)
                         .foregroundStyle(.secondary)
+                    Text(job.isUsingCustomMasteringSettings ? "詳細設定を調整中です" : "プリセットの既定値を使用しています")
+                        .font(.caption)
+                        .foregroundStyle(job.isUsingCustomMasteringSettings ? .orange : .secondary)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            DisclosureGroup(isExpanded: $job.showAdvancedMasteringSettings) {
+                advancedMasteringSettings
+                    .padding(.top, 8)
+            } label: {
+                Text("詳細設定")
+                    .font(.subheadline.weight(.semibold))
+            }
+        }
+    }
+
+    private var advancedMasteringSettings: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("プリセットの既定値を細かく調整できます。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("プリセットへ戻す") {
+                    job.resetMasteringSettingsToProfile()
+                }
+                .disabled(!job.isUsingCustomMasteringSettings)
+            }
+
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                sliderCard(title: "LUFS目標", valueText: String(format: "%.1f LUFS", job.editableMasteringSettings.targetLoudness)) {
+                    Slider(
+                        value: binding(
+                            get: { Double(job.editableMasteringSettings.targetLoudness) },
+                            set: { newValue in
+                                job.updateMasteringSettings { settings in
+                                    settings.targetLoudness = Float(newValue)
+                                }
+                            }
+                        ),
+                        in: -18 ... -9,
+                        step: 0.1
+                    )
+                }
+
+                sliderCard(title: "True Peak", valueText: String(format: "%.1f dB", job.editableMasteringSettings.peakCeilingDB)) {
+                    Slider(
+                        value: binding(
+                            get: { Double(job.editableMasteringSettings.peakCeilingDB) },
+                            set: { newValue in
+                                job.updateMasteringSettings { settings in
+                                    settings.peakCeilingDB = Float(newValue)
+                                }
+                            }
+                        ),
+                        in: -2 ... -0.2,
+                        step: 0.1
+                    )
+                }
+
+                sliderCard(title: "低域の厚み", valueText: String(format: "%.2f", job.editableMasteringSettings.lowShelfGain)) {
+                    Slider(
+                        value: binding(
+                            get: { Double(job.editableMasteringSettings.lowShelfGain) },
+                            set: { newValue in
+                                job.updateMasteringSettings { settings in
+                                    settings.lowShelfGain = Float(newValue)
+                                }
+                            }
+                        ),
+                        in: 0 ... 3,
+                        step: 0.05
+                    )
+                }
+
+                sliderCard(title: "高域の明るさ", valueText: String(format: "%.2f", job.editableMasteringSettings.highShelfGain)) {
+                    Slider(
+                        value: binding(
+                            get: { Double(job.editableMasteringSettings.highShelfGain) },
+                            set: { newValue in
+                                job.updateMasteringSettings { settings in
+                                    settings.highShelfGain = Float(newValue)
+                                }
+                            }
+                        ),
+                        in: 0 ... 3,
+                        step: 0.05
+                    )
+                }
+
+                compressorControlCard(title: "低域コンプ", settings: job.editableMasteringSettings.multibandCompression.low) { field, value in
+                    job.updateMasteringSettings { settings in
+                        switch field {
+                        case .ratio:
+                            settings.multibandCompression.low.ratio = Float(value)
+                        case .threshold:
+                            settings.multibandCompression.low.thresholdDB = Float(value)
+                        }
+                    }
+                }
+
+                compressorControlCard(title: "中域コンプ", settings: job.editableMasteringSettings.multibandCompression.mid) { field, value in
+                    job.updateMasteringSettings { settings in
+                        switch field {
+                        case .ratio:
+                            settings.multibandCompression.mid.ratio = Float(value)
+                        case .threshold:
+                            settings.multibandCompression.mid.thresholdDB = Float(value)
+                        }
+                    }
+                }
+
+                compressorControlCard(title: "高域コンプ", settings: job.editableMasteringSettings.multibandCompression.high) { field, value in
+                    job.updateMasteringSettings { settings in
+                        switch field {
+                        case .ratio:
+                            settings.multibandCompression.high.ratio = Float(value)
+                        case .threshold:
+                            settings.multibandCompression.high.thresholdDB = Float(value)
+                        }
+                    }
+                }
+
+                sliderCard(title: "ステレオ幅", valueText: String(format: "%.2f", job.editableMasteringSettings.stereoWidth)) {
+                    Slider(
+                        value: binding(
+                            get: { Double(job.editableMasteringSettings.stereoWidth) },
+                            set: { newValue in
+                                job.updateMasteringSettings { settings in
+                                    settings.stereoWidth = Float(newValue)
+                                }
+                            }
+                        ),
+                        in: 0.8 ... 1.4,
+                        step: 0.01
+                    )
+                }
+
+                sliderCard(title: "サチュレーション量", valueText: String(format: "%.2f", job.editableMasteringSettings.saturationAmount)) {
+                    Slider(
+                        value: binding(
+                            get: { Double(job.editableMasteringSettings.saturationAmount) },
+                            set: { newValue in
+                                job.updateMasteringSettings { settings in
+                                    settings.saturationAmount = Float(newValue)
+                                }
+                            }
+                        ),
+                        in: 0 ... 0.45,
+                        step: 0.01
+                    )
+                }
             }
         }
     }
 
     private var previewSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("試聴比較")
-                .font(.headline)
+            HStack {
+                Text("試聴比較")
+                    .font(.headline)
+                Spacer()
+                Text(preview.playbackLabel)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            comparisonControlSection
 
             HStack(spacing: 14) {
                 previewCard(title: "入力音声", target: .input, fileURL: job.inputFile, tint: .blue)
                 previewCard(title: "補正後", target: .corrected, fileURL: job.hasExistingOutput ? job.outputFile : nil, tint: .green)
                 previewCard(title: "最終版", target: .mastered, fileURL: job.hasExistingMasteredOutput ? job.masteredOutputFile : nil, tint: .orange)
+            }
+        }
+    }
+
+    private var comparisonControlSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Picker("比較対象", selection: binding(
+                    get: { preview.comparisonPair },
+                    set: { preview.setComparisonPair($0) }
+                )) {
+                    ForEach(AudioComparisonPair.allCases) { pair in
+                        Text(pair.title).tag(pair)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                Spacer()
+            }
+
+            HStack(spacing: 10) {
+                Text(preview.comparisonPair.summary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                Text("現在: \(preview.comparisonPair.title(for: preview.activeComparisonSide))")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack(spacing: 10) {
+                Button("Aを再生") {
+                    preview.playComparisonSide(.a)
+                }
+                .disabled(comparisonFileURL(for: .a) == nil)
+
+                Button("Bを再生") {
+                    preview.playComparisonSide(.b)
+                }
+                .disabled(comparisonFileURL(for: .b) == nil)
+
+                Button("A/B切替") {
+                    preview.toggleComparisonSide()
+                }
+                .disabled(comparisonFileURL(for: .a) == nil || comparisonFileURL(for: .b) == nil)
             }
         }
     }
@@ -129,12 +338,20 @@ struct ContentView: View {
             LiveBandSample(id: $0.id, label: $0.label, level: 0)
         }
         let isActive = preview.activeTarget == target
+        let comparisonSide = preview.comparisonSide(for: target)
         let playbackState = preview.playbackState(for: target)
 
         return VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text(title)
                     .font(.headline)
+                if let comparisonSide, preview.isInComparisonPair(target) {
+                    Text(preview.comparisonPair.title(for: comparisonSide))
+                        .font(.caption.bold())
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Capsule().fill(isActive ? tint.opacity(0.22) : Color.secondary.opacity(0.12)))
+                }
                 Spacer()
                 Text(preview.playbackTimeText(for: target))
                     .font(.caption.monospacedDigit())
@@ -285,7 +502,7 @@ struct ContentView: View {
                 VStack(alignment: .trailing, spacing: 4) {
                     Text(job.statusMessage)
                         .foregroundStyle(correctionStatusColor)
-                    Text(job.isAnalyzingMetrics ? "比較を更新中" : preview.playbackLabel)
+                    Text(job.isAnalyzingMetrics ? "比較を更新中" : "試聴状態は上の試聴比較に表示します")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -321,7 +538,7 @@ struct ContentView: View {
                 VStack(alignment: .trailing, spacing: 4) {
                     Text(job.masteringStatusMessage)
                         .foregroundStyle(masteringStatusColor)
-                    Text(job.selectedMasteringProfile.summary)
+                    Text(job.isUsingCustomMasteringSettings ? "詳細設定を反映します" : job.selectedMasteringProfile.summary)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -720,7 +937,7 @@ struct ContentView: View {
             do {
                 let masteredFile = try await MasteringService().process(
                     inputFile: correctedFile,
-                    profile: job.selectedMasteringProfile
+                    settings: job.editableMasteringSettings
                 ) { message in
                     Task { @MainActor in
                         job.appendMasteringLog(message)
@@ -800,6 +1017,60 @@ struct ContentView: View {
         preview.preparePreview(for: job.inputFile, target: .input)
         preview.preparePreview(for: job.hasExistingOutput ? job.outputFile : nil, target: .corrected)
         preview.preparePreview(for: job.hasExistingMasteredOutput ? job.masteredOutputFile : nil, target: .mastered)
+    }
+
+    private enum CompressorField {
+        case threshold
+        case ratio
+    }
+
+    private func compressorControlCard(
+        title: String,
+        settings: BandCompressorSettings,
+        onChange: @escaping (CompressorField, Double) -> Void
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+            Text(String(format: "Threshold %.1f dB / Ratio %.2f", settings.thresholdDB, settings.ratio))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Slider(value: binding(get: { Double(settings.thresholdDB) }, set: { onChange(.threshold, $0) }), in: -36 ... -12, step: 0.5)
+            Slider(value: binding(get: { Double(settings.ratio) }, set: { onChange(.ratio, $0) }), in: 1.1 ... 4.0, step: 0.05)
+        }
+        .padding(12)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func sliderCard<Content: View>(title: String, valueText: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+            Text(valueText)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            content()
+        }
+        .padding(12)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func comparisonFileURL(for side: AudioComparisonSide) -> URL? {
+        switch preview.comparisonTarget(for: side) {
+        case .input:
+            return job.inputFile
+        case .corrected:
+            return job.hasExistingOutput ? job.outputFile : nil
+        case .mastered:
+            return job.hasExistingMasteredOutput ? job.masteredOutputFile : nil
+        }
+    }
+
+    private func binding<Value>(get: @escaping @MainActor () -> Value, set: @escaping @MainActor (Value) -> Void) -> Binding<Value> {
+        Binding(
+            get: { @MainActor in get() },
+            set: { @MainActor newValue in set(newValue) }
+        )
     }
 
     private func formattedValue(_ value: Double, format: MetricFormat) -> String {

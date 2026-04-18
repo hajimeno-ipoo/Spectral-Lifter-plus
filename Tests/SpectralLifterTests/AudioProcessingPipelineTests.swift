@@ -51,7 +51,10 @@ struct AudioProcessingPipelineTests {
         for index in 0..<frameCount {
             channel[index] = Float(sin(2 * Double.pi * 440 * Double(index) / sampleRate) * 0.1)
         }
-        let file = try AVAudioFile(forWriting: url, settings: format.settings)
+        let file = try AVAudioFile(
+            forWriting: url,
+            settings: AudioFileService.interleavedFileSettings(sampleRate: sampleRate, channels: 1)
+        )
         try file.write(from: buffer)
     }
 }

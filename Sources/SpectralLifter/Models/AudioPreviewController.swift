@@ -20,6 +20,8 @@ final class AudioPreviewController: NSObject, AVAudioPlayerDelegate {
     var playbackLabel = "未再生"
     var previewSnapshots: [AudioPreviewTarget: AudioPreviewSnapshot] = [:]
     var liveBandLevels: [AudioPreviewTarget: [LiveBandSample]] = [:]
+    var comparisonPair: AudioComparisonPair = .correctedVsMastered
+    var activeComparisonSide: AudioComparisonSide = .a
 
     private var player: AVAudioPlayer?
     private var meterTimer: Timer?
@@ -40,6 +42,7 @@ final class AudioPreviewController: NSObject, AVAudioPlayerDelegate {
 
         do {
             preparePreview(for: url, target: target)
+            syncComparisonPositionIfNeeded(for: target)
             transitionAwayFromCurrentTarget(keepingPosition: true)
             player = try AVAudioPlayer(contentsOf: url)
             player?.delegate = self
@@ -52,7 +55,12 @@ final class AudioPreviewController: NSObject, AVAudioPlayerDelegate {
             player?.play()
             activeTarget = target
             playbackStates[target] = .playing
-            playbackLabel = "\(target.rawValue)を再生中"
+            if let comparisonSide = comparisonSide(for: target) {
+                activeComparisonSide = comparisonSide
+                playbackLabel = "\(comparisonPair.title(for: comparisonSide)) \(target.rawValue)を再生中"
+            } else {
+                playbackLabel = "\(target.rawValue)を再生中"
+            }
             let progress = player?.duration == 0 ? 0 : max(0, min(1, (player?.currentTime ?? 0) / (player?.duration ?? 1)))
             playbackProgresses[target] = progress
             startMetering(target: target)
@@ -60,6 +68,48 @@ final class AudioPreviewController: NSObject, AVAudioPlayerDelegate {
             stopPlayback(target: target)
             playbackLabel = "再生できませんでした"
         }
+    }
+
+    func playComparisonSide(_ side: AudioComparisonSide) {
+        activeComparisonSide = side
+        let target = comparisonTarget(for: side)
+        startPlayback(for: previewSourceURLs[target], target: target)
+    }
+
+    func toggleComparisonSide() {
+        let next: AudioComparisonSide = activeComparisonSide == .a ? .b : .a
+        playComparisonSide(next)
+    }
+
+    func setComparisonPair(_ pair: AudioComparisonPair) {
+        comparisonPair = pair
+        activeComparisonSide = .a
+        if let activeTarget, !pair.targets.contains(activeTarget) {
+            stopPlayback()
+        }
+    }
+
+    func comparisonTarget(for side: AudioComparisonSide) -> AudioPreviewTarget {
+        switch side {
+        case .a:
+            return comparisonPair.firstTarget
+        case .b:
+            return comparisonPair.secondTarget
+        }
+    }
+
+    func comparisonSide(for target: AudioPreviewTarget) -> AudioComparisonSide? {
+        if comparisonPair.firstTarget == target {
+            return .a
+        }
+        if comparisonPair.secondTarget == target {
+            return .b
+        }
+        return nil
+    }
+
+    func isInComparisonPair(_ target: AudioPreviewTarget) -> Bool {
+        comparisonPair.targets.contains(target)
     }
 
     func pausePlayback(target: AudioPreviewTarget) {
@@ -229,15 +279,10 @@ final class AudioPreviewController: NSObject, AVAudioPlayerDelegate {
     }
 
     private func sharedComparisonLevels(for target: AudioPreviewTarget, bucketIndex: Int) -> [LiveBandSample]? {
-        let comparisonTarget: AudioPreviewTarget
-        switch target {
-        case .input:
-            comparisonTarget = .corrected
-        case .corrected:
-            comparisonTarget = .input
-        case .mastered:
-            comparisonTarget = .corrected
+        guard isInComparisonPair(target) else {
+            return nil
         }
+        let comparisonTarget = comparisonPair.firstTarget == target ? comparisonPair.secondTarget : comparisonPair.firstTarget
         let targetSnapshot = previewSnapshots[target]
         let comparisonSnapshot = previewSnapshots[comparisonTarget]
         guard
@@ -340,6 +385,23 @@ final class AudioPreviewController: NSObject, AVAudioPlayerDelegate {
         player?.stop()
         player = nil
         self.activeTarget = nil
+    }
+
+    private func syncComparisonPositionIfNeeded(for target: AudioPreviewTarget) {
+        guard isInComparisonPair(target) else { return }
+
+        if let activeTarget, isInComparisonPair(activeTarget), activeTarget != target {
+            let currentTime = player?.currentTime ?? playbackPositions[activeTarget] ?? 0
+            playbackPositions[activeTarget] = currentTime
+            playbackProgresses[activeTarget] = player?.duration ?? 0 > 0 ? currentTime / max(player?.duration ?? 1, 1) : 0
+            playbackPositions[target] = currentTime
+            return
+        }
+
+        let pairedTarget = comparisonPair.firstTarget == target ? comparisonPair.secondTarget : comparisonPair.firstTarget
+        if let pairedPosition = playbackPositions[pairedTarget], pairedPosition > 0 {
+            playbackPositions[target] = pairedPosition
+        }
     }
 
     private func normalizedProgress(for target: AudioPreviewTarget, duration: TimeInterval) -> Double {

@@ -27,7 +27,7 @@ enum AudioFileService {
             destination.update(from: channel, count: channel.count)
         }
 
-        let file = try AVAudioFile(forWriting: url, settings: format.settings, commonFormat: .pcmFormatFloat32, interleaved: false)
+        let file = try AVAudioFile(forWriting: url, settings: interleavedFileSettings(sampleRate: signal.sampleRate, channels: signal.channels.count))
         try file.write(from: buffer)
     }
 
@@ -148,5 +148,17 @@ enum AudioFileService {
         Dictionary(uniqueKeysWithValues: AudioBandCatalog.previewBands.map { band in
             (band.id, Array(repeating: fill, count: bucketCount))
         })
+    }
+
+    static func interleavedFileSettings(sampleRate: Double, channels: Int) -> [String: Any] {
+        [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVSampleRateKey: sampleRate,
+            AVNumberOfChannelsKey: channels,
+            AVLinearPCMBitDepthKey: 32,
+            AVLinearPCMIsFloatKey: true,
+            AVLinearPCMIsBigEndianKey: false,
+            AVLinearPCMIsNonInterleaved: false
+        ]
     }
 }

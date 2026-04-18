@@ -37,7 +37,11 @@ enum MasteringProfile: String, CaseIterable, Identifiable, Sendable {
                 peakCeilingDB: -1.2,
                 lowShelfGain: 0.8,
                 highShelfGain: 0.6,
-                bandControlAmount: 0.24,
+                multibandCompression: MultibandCompressionSettings(
+                    low: BandCompressorSettings(thresholdDB: -23, ratio: 1.7, attackMs: 30, releaseMs: 180, makeupGainDB: 0.4),
+                    mid: BandCompressorSettings(thresholdDB: -22, ratio: 1.5, attackMs: 18, releaseMs: 140, makeupGainDB: 0.2),
+                    high: BandCompressorSettings(thresholdDB: -24, ratio: 1.8, attackMs: 8, releaseMs: 110, makeupGainDB: 0.1)
+                ),
                 stereoWidth: 1.04,
                 saturationAmount: 0.10
             )
@@ -47,7 +51,11 @@ enum MasteringProfile: String, CaseIterable, Identifiable, Sendable {
                 peakCeilingDB: -1.0,
                 lowShelfGain: 1.2,
                 highShelfGain: 0.8,
-                bandControlAmount: 0.34,
+                multibandCompression: MultibandCompressionSettings(
+                    low: BandCompressorSettings(thresholdDB: -25, ratio: 2.2, attackMs: 26, releaseMs: 170, makeupGainDB: 0.7),
+                    mid: BandCompressorSettings(thresholdDB: -23, ratio: 1.9, attackMs: 14, releaseMs: 130, makeupGainDB: 0.4),
+                    high: BandCompressorSettings(thresholdDB: -25, ratio: 2.1, attackMs: 6, releaseMs: 90, makeupGainDB: 0.2)
+                ),
                 stereoWidth: 1.08,
                 saturationAmount: 0.16
             )
@@ -57,7 +65,11 @@ enum MasteringProfile: String, CaseIterable, Identifiable, Sendable {
                 peakCeilingDB: -0.9,
                 lowShelfGain: 1.6,
                 highShelfGain: 1.1,
-                bandControlAmount: 0.42,
+                multibandCompression: MultibandCompressionSettings(
+                    low: BandCompressorSettings(thresholdDB: -27, ratio: 2.6, attackMs: 22, releaseMs: 160, makeupGainDB: 1.0),
+                    mid: BandCompressorSettings(thresholdDB: -24, ratio: 2.2, attackMs: 10, releaseMs: 110, makeupGainDB: 0.7),
+                    high: BandCompressorSettings(thresholdDB: -26, ratio: 2.4, attackMs: 4, releaseMs: 80, makeupGainDB: 0.4)
+                ),
                 stereoWidth: 1.12,
                 saturationAmount: 0.22
             )
@@ -65,14 +77,28 @@ enum MasteringProfile: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-struct MasteringSettings: Sendable {
-    let targetLoudness: Float
-    let peakCeilingDB: Float
-    let lowShelfGain: Float
-    let highShelfGain: Float
-    let bandControlAmount: Float
-    let stereoWidth: Float
-    let saturationAmount: Float
+struct MasteringSettings: Sendable, Equatable {
+    var targetLoudness: Float
+    var peakCeilingDB: Float
+    var lowShelfGain: Float
+    var highShelfGain: Float
+    var multibandCompression: MultibandCompressionSettings
+    var stereoWidth: Float
+    var saturationAmount: Float
+}
+
+struct MultibandCompressionSettings: Sendable, Equatable {
+    var low: BandCompressorSettings
+    var mid: BandCompressorSettings
+    var high: BandCompressorSettings
+}
+
+struct BandCompressorSettings: Sendable, Equatable {
+    var thresholdDB: Float
+    var ratio: Float
+    var attackMs: Float
+    var releaseMs: Float
+    var makeupGainDB: Float
 }
 
 struct MasteringAnalysis: Sendable {
@@ -83,6 +109,69 @@ struct MasteringAnalysis: Sendable {
     let highBandLevelDB: Double
     let harshnessScore: Float
     let stereoWidth: Float
+}
+
+enum AudioComparisonPair: String, CaseIterable, Identifiable {
+    case inputVsCorrected
+    case correctedVsMastered
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .inputVsCorrected:
+            return "入力 vs 補正後"
+        case .correctedVsMastered:
+            return "補正後 vs 最終版"
+        }
+    }
+
+    var summary: String {
+        switch self {
+        case .inputVsCorrected:
+            return "補正でどれだけ整ったかを聴き比べます"
+        case .correctedVsMastered:
+            return "マスタリングでどれだけ仕上がったかを聴き比べます"
+        }
+    }
+
+    var firstTarget: AudioPreviewTarget {
+        switch self {
+        case .inputVsCorrected:
+            return .input
+        case .correctedVsMastered:
+            return .corrected
+        }
+    }
+
+    var secondTarget: AudioPreviewTarget {
+        switch self {
+        case .inputVsCorrected:
+            return .corrected
+        case .correctedVsMastered:
+            return .mastered
+        }
+    }
+
+    var targets: [AudioPreviewTarget] {
+        [firstTarget, secondTarget]
+    }
+
+    func title(for side: AudioComparisonSide) -> String {
+        switch side {
+        case .a:
+            return "A"
+        case .b:
+            return "B"
+        }
+    }
+}
+
+enum AudioComparisonSide: String, CaseIterable, Identifiable {
+    case a
+    case b
+
+    var id: String { rawValue }
 }
 
 enum MasteringStep: String, CaseIterable, Hashable {

@@ -47,6 +47,9 @@ final class ProcessingJob {
     var completedMasteringSteps: Set<MasteringStep> = []
     var isAnalyzingMetrics = false
     var selectedMasteringProfile: MasteringProfile = .streaming
+    var editableMasteringSettings: MasteringSettings = MasteringProfile.streaming.settings
+    var isUsingCustomMasteringSettings = false
+    var showAdvancedMasteringSettings = false
 
     var statusColor: Color {
         if isProcessing {
@@ -95,6 +98,7 @@ final class ProcessingJob {
         completedSteps = []
         masteringActiveStep = nil
         completedMasteringSteps = []
+        applyMasteringProfile(selectedMasteringProfile)
     }
 
     func beginProcessing() {
@@ -122,6 +126,21 @@ final class ProcessingJob {
         masteringStatusMessage = "マスタリング中"
         masteringActiveStep = nil
         completedMasteringSteps = []
+    }
+
+    func applyMasteringProfile(_ profile: MasteringProfile) {
+        selectedMasteringProfile = profile
+        editableMasteringSettings = profile.settings
+        isUsingCustomMasteringSettings = false
+    }
+
+    func resetMasteringSettingsToProfile() {
+        applyMasteringProfile(selectedMasteringProfile)
+    }
+
+    func updateMasteringSettings(_ update: (inout MasteringSettings) -> Void) {
+        update(&editableMasteringSettings)
+        isUsingCustomMasteringSettings = true
     }
 
     func beginMetricAnalysis() {

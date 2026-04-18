@@ -37,7 +37,10 @@ struct MasteringAnalysisServiceTests {
             right[index] = Float(sin(phase * 220 + 0.15) * 0.10)
         }
 
-        let file = try AVAudioFile(forWriting: url, settings: format.settings)
+        let file = try AVAudioFile(
+            forWriting: url,
+            settings: AudioFileService.interleavedFileSettings(sampleRate: sampleRate, channels: 2)
+        )
         try file.write(from: buffer)
     }
 }
