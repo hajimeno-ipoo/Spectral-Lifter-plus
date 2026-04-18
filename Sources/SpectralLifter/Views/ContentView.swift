@@ -115,14 +115,14 @@ struct ContentView: View {
             LiveBandSample(id: $0.id, label: $0.label, level: 0)
         }
         let isActive = preview.activeTarget == target
-        let previewBandDeltas = previewBandDeltas(for: target, isActive: isActive)
+        let playbackState = preview.playbackState(for: target)
 
         return VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text(title)
                     .font(.headline)
                 Spacer()
-                Text(preview.durationText(for: target))
+                Text(preview.playbackTimeText(for: target))
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
@@ -131,7 +131,7 @@ struct ContentView: View {
                 .lineLimit(2)
                 .foregroundStyle(fileURL == nil ? .secondary : .primary)
 
-            waveformPreview(snapshot: snapshot, tint: tint, progress: isActive ? preview.playbackProgress : 0)
+            waveformPreview(snapshot: snapshot, tint: tint, progress: preview.playbackProgress(for: target))
 
             VStack(spacing: 6) {
                 ForEach(liveBands) { band in
@@ -146,8 +146,6 @@ struct ContentView: View {
                                     .fill(Color.secondary.opacity(0.12))
                                 previewLevelBar(
                                     band: band,
-                                    target: target,
-                                    deltaValue: previewBandDeltas[band.id],
                                     tint: tint,
                                     isActive: isActive,
                                     totalWidth: proxy.size.width
@@ -161,10 +159,20 @@ struct ContentView: View {
             }
 
             HStack(spacing: 8) {
-                Button(preview.activeTarget == target ? "停止" : "再生") {
-                    preview.togglePlayback(for: fileURL, target: target)
+                Button(primaryPlaybackButtonTitle(for: target)) {
+                    preview.startPlayback(for: fileURL, target: target)
                 }
-                .disabled(fileURL == nil)
+                .disabled(fileURL == nil || playbackState == .playing)
+
+                Button("一時停止") {
+                    preview.pausePlayback(target: target)
+                }
+                .disabled(playbackState != .playing)
+
+                Button("停止") {
+                    preview.stopPlayback(target: target)
+                }
+                .disabled(fileURL == nil || playbackState == .stopped)
 
                 if let fileURL {
                     Button("Finder") {
@@ -185,10 +193,20 @@ struct ContentView: View {
         )
     }
 
+    private func primaryPlaybackButtonTitle(for target: AudioPreviewTarget) -> String {
+        switch preview.playbackState(for: target) {
+        case .paused:
+            return "再開"
+        case .playing, .stopped:
+            return "再生"
+        }
+    }
+
     private func waveformPreview(snapshot: AudioPreviewSnapshot, tint: Color, progress: Double) -> some View {
         GeometryReader { proxy in
             let width = proxy.size.width
             let points = snapshot.waveform
+            let clampedProgress = max(0, min(1, progress))
 
             ZStack(alignment: .leading) {
                 RoundedRectangle(cornerRadius: 10)
@@ -222,8 +240,8 @@ struct ContentView: View {
                 Rectangle()
                     .fill(tint)
                     .frame(width: 2)
-                    .offset(x: width * progress)
-                    .opacity(progress > 0 ? 1 : 0)
+                    .offset(x: width * clampedProgress)
+                    .opacity(snapshot.duration > 0 ? 1 : 0)
             }
         }
         .frame(height: 54)
@@ -374,31 +392,41 @@ struct ContentView: View {
 
             ForEach(pairs, id: \.0.id) { inputMetric, outputMetric in
                 let delta = outputMetric.map { $0.levelDB - inputMetric.levelDB }
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
+                HStack(alignment: .top, spacing: 14) {
+                    VStack(alignment: .leading, spacing: 6) {
                         Text(inputMetric.label)
                             .font(.caption.bold())
                         Text(inputMetric.rangeDescription)
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        Spacer()
-                        HStack(spacing: 8) {
-                            Text(delta.map { "差分  \(formattedDelta($0, format: .dBFS))" } ?? "差分  --")
-                                .font(.caption.monospacedDigit())
-                                .foregroundStyle(deltaChipColor(for: delta))
-                            deltaChip(delta: delta)
-                        }
-                    }
 
-                    HStack(spacing: 10) {
                         bandBar(title: "入力", value: inputMetric.levelDB, minLevel: minLevel, maxLevel: maxLevel, tint: .blue)
                         bandBar(title: "出力", value: outputMetric?.levelDB, minLevel: minLevel, maxLevel: maxLevel, tint: .green)
                     }
+
+                    Spacer(minLength: 0)
+
+                    diffSummary(delta: delta)
                 }
             }
         }
         .padding(14)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    private func diffSummary(delta: Double?) -> some View {
+        VStack(alignment: .trailing, spacing: 8) {
+            Text("差分")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Text(delta.map { formattedDelta($0, format: .dBFS) } ?? "--")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(deltaChipColor(for: delta))
+
+            deltaChip(delta: delta)
+        }
+        .frame(width: 94, alignment: .trailing)
     }
 
     private func bandBar(title: String, value: Double?, minLevel: Double, maxLevel: Double, tint: Color) -> some View {
@@ -429,50 +457,18 @@ struct ContentView: View {
         .frame(maxWidth: .infinity)
     }
 
-    private func previewBandDeltas(for target: AudioPreviewTarget, isActive: Bool) -> [String: Double] {
-        guard target == .output, isActive else { return [:] }
-        let inputLevels = Dictionary(uniqueKeysWithValues: (job.inputMetrics?.bandEnergies ?? []).map {
-            ($0.id, $0.levelDB)
-        })
-        let deltaPairs = (job.outputMetrics?.bandEnergies ?? []).compactMap { output -> (String, Double)? in
-            guard let input = inputLevels[output.id] else { return nil }
-            return (output.id, output.levelDB - input)
-        }
-        return Dictionary(uniqueKeysWithValues: deltaPairs)
-    }
-
     @ViewBuilder
     private func previewLevelBar(
         band: LiveBandSample,
-        target: AudioPreviewTarget,
-        deltaValue: Double?,
         tint: Color,
         isActive: Bool,
         totalWidth: CGFloat
     ) -> some View {
         let liveWidth = totalWidth * band.level
 
-        if target == .output, isActive, let deltaValue, abs(deltaValue) >= 0.12 {
-            let deltaWidth = min(totalWidth, totalWidth * abs(deltaValue) / 5.0)
-            let diffColor = deltaValue >= 0 ? Color.yellow : Color.red
-
-            ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(tint.opacity(isActive ? 0.95 : 0.45))
-                    .frame(width: liveWidth)
-
-                if deltaWidth > 1 {
-                    Capsule()
-                        .fill(diffColor.opacity(isActive ? 0.95 : 0.85))
-                        .frame(width: deltaWidth)
-                        .offset(x: deltaValue >= 0 ? max(0, liveWidth - deltaWidth) : liveWidth)
-                }
-            }
-        } else {
-            Capsule()
-                .fill(tint.opacity(isActive ? 0.95 : 0.45))
-                .frame(width: liveWidth)
-        }
+        Capsule()
+            .fill(tint.opacity(isActive ? 0.95 : 0.45))
+            .frame(width: liveWidth)
     }
 
     private func deltaChip(delta: Double?) -> some View {
@@ -529,13 +525,30 @@ struct ContentView: View {
                         job.appendLog(message)
                     }
                 }
+
+                await MainActor.run {
+                    job.beginMetricAnalysis()
+                }
+
+                async let outputSnapshotTask: AudioPreviewSnapshot = Task.detached(priority: .utility) {
+                    try AudioFileService.makePreviewSnapshot(for: outputFile)
+                }.value
+                async let outputMetricsTask: AudioMetricSnapshot = Task.detached(priority: .utility) {
+                    try AudioComparisonService.analyze(fileURL: outputFile)
+                }.value
+
+                let outputSnapshot = try await outputSnapshotTask
+                let outputMetrics = try await outputMetricsTask
+
                 await MainActor.run {
                     job.finishSuccess(outputFile)
-                    preparePreviewCards()
+                    preview.preparePreview(for: job.inputFile, target: .input)
+                    preview.setPreviewSnapshot(outputSnapshot, for: .output, sourceURL: outputFile)
+                    job.finishOutputMetricAnalysis(outputMetrics)
                 }
-                analyzeMetrics(for: outputFile, target: .output)
             } catch {
                 await MainActor.run {
+                    job.failMetricAnalysis()
                     job.finishFailure(error.localizedDescription)
                 }
             }
