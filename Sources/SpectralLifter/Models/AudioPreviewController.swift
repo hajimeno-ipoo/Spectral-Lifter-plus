@@ -18,6 +18,7 @@ enum AudioPlaybackState {
 final class AudioPreviewController: NSObject, AVAudioPlayerDelegate {
     var activeTarget: AudioPreviewTarget?
     var playbackLabel = "未再生"
+    var playbackVolume: Float = 1.0
     var previewSnapshots: [AudioPreviewTarget: AudioPreviewSnapshot] = [:]
     var liveBandLevels: [AudioPreviewTarget: [LiveBandSample]] = [:]
     var comparisonPair: AudioComparisonPair = .correctedVsMastered
@@ -50,7 +51,7 @@ final class AudioPreviewController: NSObject, AVAudioPlayerDelegate {
             player?.delegate = self
             player?.isMeteringEnabled = true
             player?.prepareToPlay()
-            player?.volume = playbackVolume(for: target)
+            player?.volume = effectivePlaybackVolume(for: target)
             let resumeTime = playbackPositions[target] ?? 0
             if let player {
                 player.currentTime = min(resumeTime, max(player.duration - 0.05, 0))
@@ -95,6 +96,11 @@ final class AudioPreviewController: NSObject, AVAudioPlayerDelegate {
 
     func setLoudnessMatchedComparisonEnabled(_ isEnabled: Bool) {
         isLoudnessMatchedComparisonEnabled = isEnabled
+        refreshPlaybackVolumeIfNeeded()
+    }
+
+    func setPlaybackVolume(_ volume: Float) {
+        playbackVolume = min(max(volume, 0), 1)
         refreshPlaybackVolumeIfNeeded()
     }
 
@@ -410,10 +416,14 @@ final class AudioPreviewController: NSObject, AVAudioPlayerDelegate {
 
     private func refreshPlaybackVolumeIfNeeded() {
         guard let activeTarget else { return }
-        player?.volume = playbackVolume(for: activeTarget)
+        player?.volume = effectivePlaybackVolume(for: activeTarget)
     }
 
-    private func playbackVolume(for target: AudioPreviewTarget) -> Float {
+    private func effectivePlaybackVolume(for target: AudioPreviewTarget) -> Float {
+        playbackVolume * comparisonPlaybackGain(for: target)
+    }
+
+    private func comparisonPlaybackGain(for target: AudioPreviewTarget) -> Float {
         guard isLoudnessMatchedComparisonEnabled, isInComparisonPair(target) else {
             return 1.0
         }

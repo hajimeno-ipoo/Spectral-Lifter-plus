@@ -19,4 +19,14 @@ enum FilePanelService {
         panel.prompt = "開く"
         return panel.runModal() == .OK ? panel.url : nil
     }
+
+    static func chooseSaveLocation(suggestedFileName: String, allowedContentTypes: [UTType]) -> URL? {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = allowedContentTypes
+        panel.nameFieldStringValue = suggestedFileName
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        panel.prompt = "書き出し"
+        return panel.runModal() == .OK ? panel.url : nil
+    }
 }

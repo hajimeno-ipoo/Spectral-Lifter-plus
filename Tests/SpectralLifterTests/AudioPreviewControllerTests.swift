@@ -33,4 +33,15 @@ struct AudioPreviewControllerTests {
         controller.setLoudnessMatchedComparisonEnabled(false)
         #expect(controller.isLoudnessMatchedComparisonEnabled == false)
     }
+
+    @Test
+    func playbackVolumeUpdatesState() {
+        let controller = AudioPreviewController()
+
+        controller.setPlaybackVolume(0.42)
+        #expect(controller.playbackVolume == 0.42)
+
+        controller.setPlaybackVolume(1.5)
+        #expect(controller.playbackVolume == 1.0)
+    }
 }

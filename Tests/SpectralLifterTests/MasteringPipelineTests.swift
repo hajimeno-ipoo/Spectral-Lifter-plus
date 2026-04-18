@@ -9,16 +9,15 @@ struct MasteringPipelineTests {
         let tempDirectory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
         let inputURL = tempDirectory.appending(path: "song_lifter.wav")
-        let outputURL = tempDirectory.appending(path: "song_lifter_mastered.wav")
 
         try makeTestTone(at: inputURL)
 
         let output = try await MasteringService().process(inputFile: inputURL, profile: .streaming) { _ in }
 
-        #expect(output == outputURL)
-        #expect(FileManager.default.fileExists(atPath: outputURL.path()))
+        #expect(FileManager.default.fileExists(atPath: output.path()))
+        #expect(output.lastPathComponent.contains("song_lifter_mastered"))
 
-        let written = try AVAudioFile(forReading: outputURL)
+        let written = try AVAudioFile(forReading: output)
         #expect(written.length > 0)
         let buffer = AVAudioPCMBuffer(pcmFormat: written.processingFormat, frameCapacity: AVAudioFrameCount(written.length))!
         try written.read(into: buffer)

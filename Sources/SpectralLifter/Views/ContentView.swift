@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ContentView: View {
     @State private var job = ProcessingJob()
@@ -66,11 +67,11 @@ struct ContentView: View {
 
     private var outputSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("書き出し先")
+            Text("プレビュー用の一時保持")
                 .font(.headline)
 
-            outputPathRow(title: "補正後", fileURL: job.outputFile, placeholder: "入力ファイルを選ぶと自動で決まります")
-            outputPathRow(title: "最終版", fileURL: job.masteredOutputFile, placeholder: "補正後ファイルを元に自動で決まります")
+            outputPathRow(title: "補正後プレビュー", fileURL: job.outputFile, placeholder: "補正を実行すると一時ファイルが作られます")
+            outputPathRow(title: "最終版プレビュー", fileURL: job.masteredOutputFile, placeholder: "マスタリングを実行すると一時ファイルが作られます")
         }
     }
 
@@ -308,6 +309,25 @@ struct ContentView: View {
 
                 Spacer()
 
+                HStack(spacing: 8) {
+                    Text("vol.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Slider(
+                        value: binding(
+                            get: { Double(preview.playbackVolume) },
+                            set: { preview.setPlaybackVolume(Float($0)) }
+                        ),
+                        in: 0 ... 1,
+                        step: 0.01
+                    )
+                    .frame(width: 120)
+                    Text("\(Int((preview.playbackVolume * 100).rounded()))%")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 42, alignment: .trailing)
+                }
+
                 Toggle(
                     "ラウドネス合わせ比較",
                     isOn: binding(
@@ -495,15 +515,14 @@ struct ContentView: View {
                 .keyboardShortcut(.defaultAction)
                 .disabled(job.inputFile == nil || job.isProcessing || job.isMastering)
 
-                Button("補正後を開く") {
-                    guard let outputFile = job.outputFile else { return }
-                    NSWorkspace.shared.open(outputFile)
+                Button("補正を書き出し") {
+                    exportCorrectedAudio()
                 }
                 .disabled(!job.hasExistingOutput || job.isProcessing)
 
-                Button("補正後をFinderで表示") {
+                Button("補正プレビューを開く") {
                     guard let outputFile = job.outputFile else { return }
-                    NSWorkspace.shared.activateFileViewerSelecting([outputFile])
+                    NSWorkspace.shared.open(outputFile)
                 }
                 .disabled(!job.hasExistingOutput || job.isProcessing)
 
@@ -531,15 +550,14 @@ struct ContentView: View {
                 }
                 .disabled(!job.hasExistingOutput || job.isMastering || job.isProcessing)
 
-                Button("最終版を開く") {
-                    guard let outputFile = job.masteredOutputFile else { return }
-                    NSWorkspace.shared.open(outputFile)
+                Button("最終版を書き出し") {
+                    exportMasteredAudio()
                 }
                 .disabled(!job.hasExistingMasteredOutput || job.isMastering)
 
-                Button("最終版をFinderで表示") {
+                Button("最終版プレビューを開く") {
                     guard let outputFile = job.masteredOutputFile else { return }
-                    NSWorkspace.shared.activateFileViewerSelecting([outputFile])
+                    NSWorkspace.shared.open(outputFile)
                 }
                 .disabled(!job.hasExistingMasteredOutput || job.isMastering)
 
@@ -1027,6 +1045,49 @@ struct ContentView: View {
         preview.preparePreview(for: job.inputFile, target: .input)
         preview.preparePreview(for: job.hasExistingOutput ? job.outputFile : nil, target: .corrected)
         preview.preparePreview(for: job.hasExistingMasteredOutput ? job.masteredOutputFile : nil, target: .mastered)
+    }
+
+    private func exportCorrectedAudio() {
+        guard let sourceURL = job.outputFile, let inputFile = job.inputFile else { return }
+        let suggestedName = AudioProcessingService.defaultOutputURL(for: inputFile).lastPathComponent
+        let allowedTypes = allowedAudioTypes(for: sourceURL.pathExtension)
+        guard let destinationURL = FilePanelService.chooseSaveLocation(suggestedFileName: suggestedName, allowedContentTypes: allowedTypes) else {
+            return
+        }
+        do {
+            try replaceFile(from: sourceURL, to: destinationURL)
+            job.finishCorrectedExport(destinationURL)
+        } catch {
+            job.finishFailure(error.localizedDescription)
+        }
+    }
+
+    private func exportMasteredAudio() {
+        guard let sourceURL = job.masteredOutputFile else { return }
+        let baseURL = job.inputFile.map { MasteringService.defaultOutputURL(for: $0) } ?? sourceURL
+        let suggestedName = baseURL.lastPathComponent
+        let allowedTypes = allowedAudioTypes(for: sourceURL.pathExtension)
+        guard let destinationURL = FilePanelService.chooseSaveLocation(suggestedFileName: suggestedName, allowedContentTypes: allowedTypes) else {
+            return
+        }
+        do {
+            try replaceFile(from: sourceURL, to: destinationURL)
+            job.finishMasteredExport(destinationURL)
+        } catch {
+            job.finishMasteringFailure(error.localizedDescription)
+        }
+    }
+
+    private func replaceFile(from sourceURL: URL, to destinationURL: URL) throws {
+        let fileManager = FileManager.default
+        if fileManager.fileExists(atPath: destinationURL.path(percentEncoded: false)) {
+            try fileManager.removeItem(at: destinationURL)
+        }
+        try fileManager.copyItem(at: sourceURL, to: destinationURL)
+    }
+
+    private func allowedAudioTypes(for fileExtension: String) -> [UTType] {
+        [UTType(filenameExtension: fileExtension), .audio].compactMap { $0 }
     }
 
     private enum CompressorField {

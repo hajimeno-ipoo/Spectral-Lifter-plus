@@ -28,6 +28,8 @@ final class ProcessingJob {
     var inputFile: URL?
     var outputFile: URL?
     var masteredOutputFile: URL?
+    var exportedCorrectedFile: URL?
+    var exportedMasteredFile: URL?
     var inputMetrics: AudioMetricSnapshot?
     var outputMetrics: AudioMetricSnapshot?
     var masteredMetrics: AudioMetricSnapshot?
@@ -82,6 +84,8 @@ final class ProcessingJob {
         inputFile = inputURL
         outputFile = AudioProcessingService.defaultOutputURL(for: inputURL)
         masteredOutputFile = outputFile.map { MasteringService.defaultOutputURL(for: $0) }
+        exportedCorrectedFile = nil
+        exportedMasteredFile = nil
         inputMetrics = nil
         outputMetrics = nil
         masteredMetrics = nil
@@ -193,7 +197,7 @@ final class ProcessingJob {
     func finishSuccess(_ outputURL: URL) {
         isProcessing = false
         outputFile = outputURL
-        masteredOutputFile = MasteringService.defaultOutputURL(for: outputURL)
+        masteredOutputFile = nil
         statusMessage = "完了"
         hasExistingOutput = FileManager.default.fileExists(atPath: outputURL.path(percentEncoded: false))
         completedSteps = Set(ProcessingStep.allCases)
@@ -208,6 +212,14 @@ final class ProcessingJob {
         hasExistingMasteredOutput = FileManager.default.fileExists(atPath: outputURL.path(percentEncoded: false))
         completedMasteringSteps = Set(MasteringStep.allCases)
         masteringActiveStep = nil
+    }
+
+    func finishCorrectedExport(_ url: URL) {
+        exportedCorrectedFile = url
+    }
+
+    func finishMasteredExport(_ url: URL) {
+        exportedMasteredFile = url
     }
 
     func finishFailure(_ message: String) {

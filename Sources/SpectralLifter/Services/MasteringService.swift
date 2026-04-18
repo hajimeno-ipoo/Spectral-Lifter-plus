@@ -6,7 +6,7 @@ struct MasteringService {
     }
 
     func process(inputFile: URL, settings: MasteringSettings, logHandler: @escaping @Sendable (String) -> Void) async throws -> URL {
-        let outputURL = Self.defaultOutputURL(for: inputFile)
+        let outputURL = Self.temporaryOutputURL(for: inputFile)
         let outputPath = outputURL.path(percentEncoded: false)
         let logger = MasteringClosureLogger(logHandler: logHandler)
 
@@ -37,6 +37,18 @@ struct MasteringService {
         let baseName = fileName.hasSuffix("_mastered") ? fileName : "\(fileName)_mastered"
         let ext = inputFile.pathExtension
         return directory.appendingPathComponent(baseName).appendingPathExtension(ext)
+    }
+
+    static func temporaryOutputURL(for inputFile: URL) -> URL {
+        let fileName = inputFile.deletingPathExtension().lastPathComponent
+        let baseName = fileName.hasSuffix("_mastered") ? fileName : "\(fileName)_mastered"
+        let ext = inputFile.pathExtension
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SpectralLifterPreview", isDirectory: true)
+        try? FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        return tempDirectory
+            .appendingPathComponent("\(baseName)_\(UUID().uuidString)")
+            .appendingPathExtension(ext)
     }
 }
 

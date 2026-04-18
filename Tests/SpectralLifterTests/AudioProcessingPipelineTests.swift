@@ -9,15 +9,14 @@ struct AudioProcessingPipelineTests {
         let tempDirectory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
         let inputURL = tempDirectory.appending(path: "input.wav")
-        let outputURL = tempDirectory.appending(path: "input_lifter.wav")
 
         try makeTestTone(at: inputURL)
 
         let output = try await AudioProcessingService().process(inputFile: inputURL) { _ in }
 
-        #expect(output == outputURL)
-        #expect(FileManager.default.fileExists(atPath: outputURL.path()))
-        let written = try AVAudioFile(forReading: outputURL)
+        #expect(FileManager.default.fileExists(atPath: output.path()))
+        #expect(output.lastPathComponent.contains("input_lifter"))
+        let written = try AVAudioFile(forReading: output)
         #expect(written.length > 0)
         let buffer = AVAudioPCMBuffer(pcmFormat: written.processingFormat, frameCapacity: AVAudioFrameCount(written.length))!
         try written.read(into: buffer)
@@ -31,14 +30,13 @@ struct AudioProcessingPipelineTests {
         let tempDirectory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
         let inputURL = tempDirectory.appending(path: "violin #002 睡眠.wav")
-        let outputURL = tempDirectory.appending(path: "violin #002 睡眠_lifter.wav")
 
         try makeTestTone(at: inputURL, duration: 6)
 
         let output = try await AudioProcessingService().process(inputFile: inputURL) { _ in }
 
-        #expect(output.path(percentEncoded: false) == outputURL.path(percentEncoded: false))
-        #expect(FileManager.default.fileExists(atPath: outputURL.path(percentEncoded: false)))
+        #expect(output.lastPathComponent.contains("violin #002 睡眠_lifter"))
+        #expect(FileManager.default.fileExists(atPath: output.path(percentEncoded: false)))
     }
 
     private func makeTestTone(at url: URL, duration: Double = 2) throws {
