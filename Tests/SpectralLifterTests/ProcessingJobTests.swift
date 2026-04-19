@@ -50,7 +50,7 @@ struct ProcessingJobTests {
         job.prepareForSelection(input)
         job.beginMastering()
         job.appendMasteringLog("補正済み音源を解析します")
-        job.appendMasteringLog("トーンを整えます")
+        job.appendMasteringLog("帯域バランスを整えます")
 
         #expect(job.masteringActiveStep == .tone)
         #expect(job.completedMasteringSteps.contains(.analyze))

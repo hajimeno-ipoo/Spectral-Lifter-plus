@@ -13,6 +13,11 @@ struct ContentView: View {
         GridItem(.flexible(minimum: 180), spacing: 12)
     ]
 
+    private let comparisonCardColumns = [
+        GridItem(.flexible(), spacing: 14),
+        GridItem(.flexible(), spacing: 14)
+    ]
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
@@ -177,7 +182,7 @@ struct ContentView: View {
             }
 
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                sliderCard(title: "LUFS目標", valueText: String(format: "%.1f LUFS", job.editableMasteringSettings.targetLoudness)) {
+                sliderCard(item: radarTermDefinitions[0], valueText: String(format: "%.1f LUFS", job.editableMasteringSettings.targetLoudness)) {
                     Slider(
                         value: binding(
                             get: { Double(job.editableMasteringSettings.targetLoudness) },
@@ -192,7 +197,7 @@ struct ContentView: View {
                     )
                 }
 
-                sliderCard(title: "True Peak", valueText: String(format: "%.1f dB", job.editableMasteringSettings.peakCeilingDB)) {
+                sliderCard(item: radarTermDefinitions[1], valueText: String(format: "%.1f dB", job.editableMasteringSettings.peakCeilingDB)) {
                     Slider(
                         value: binding(
                             get: { Double(job.editableMasteringSettings.peakCeilingDB) },
@@ -207,7 +212,7 @@ struct ContentView: View {
                     )
                 }
 
-                sliderCard(title: "低音", valueText: String(format: "%.2f", job.editableMasteringSettings.lowShelfGain)) {
+                sliderCard(item: masteringSettingDefinitions[0], valueText: String(format: "%.2f", job.editableMasteringSettings.lowShelfGain)) {
                     Slider(
                         value: binding(
                             get: { Double(job.editableMasteringSettings.lowShelfGain) },
@@ -222,7 +227,7 @@ struct ContentView: View {
                     )
                 }
 
-                sliderCard(title: "こもりカット", valueText: String(format: "%.2f", job.editableMasteringSettings.lowMidGain)) {
+                sliderCard(item: masteringSettingDefinitions[1], valueText: String(format: "%.2f", job.editableMasteringSettings.lowMidGain)) {
                     Slider(
                         value: binding(
                             get: { Double(job.editableMasteringSettings.lowMidGain) },
@@ -237,7 +242,7 @@ struct ContentView: View {
                     )
                 }
 
-                sliderCard(title: "存在感", valueText: String(format: "%.2f", job.editableMasteringSettings.presenceGain)) {
+                sliderCard(item: masteringSettingDefinitions[2], valueText: String(format: "%.2f", job.editableMasteringSettings.presenceGain)) {
                     Slider(
                         value: binding(
                             get: { Double(job.editableMasteringSettings.presenceGain) },
@@ -252,7 +257,7 @@ struct ContentView: View {
                     )
                 }
 
-                sliderCard(title: "空気感", valueText: String(format: "%.2f", job.editableMasteringSettings.highShelfGain)) {
+                sliderCard(item: masteringSettingDefinitions[3], valueText: String(format: "%.2f", job.editableMasteringSettings.highShelfGain)) {
                     Slider(
                         value: binding(
                             get: { Double(job.editableMasteringSettings.highShelfGain) },
@@ -267,7 +272,7 @@ struct ContentView: View {
                     )
                 }
 
-                sliderCard(title: "刺さり抑制", valueText: String(format: "%.0f%%", Double(job.editableMasteringSettings.deEsserAmount) * 100)) {
+                sliderCard(item: masteringSettingDefinitions[4], valueText: String(format: "%.0f%%", Double(job.editableMasteringSettings.deEsserAmount) * 100)) {
                     Slider(
                         value: binding(
                             get: { Double(job.editableMasteringSettings.deEsserAmount) },
@@ -282,7 +287,7 @@ struct ContentView: View {
                     )
                 }
 
-                compressorControlCard(title: "低域コンプ", settings: job.editableMasteringSettings.multibandCompression.low) { field, value in
+                compressorControlCard(item: compressionBandDefinitions[0], settings: job.editableMasteringSettings.multibandCompression.low) { field, value in
                     job.updateMasteringSettings { settings in
                         switch field {
                         case .ratio:
@@ -293,7 +298,7 @@ struct ContentView: View {
                     }
                 }
 
-                compressorControlCard(title: "中域コンプ", settings: job.editableMasteringSettings.multibandCompression.mid) { field, value in
+                compressorControlCard(item: compressionBandDefinitions[1], settings: job.editableMasteringSettings.multibandCompression.mid) { field, value in
                     job.updateMasteringSettings { settings in
                         switch field {
                         case .ratio:
@@ -304,7 +309,7 @@ struct ContentView: View {
                     }
                 }
 
-                compressorControlCard(title: "高域コンプ", settings: job.editableMasteringSettings.multibandCompression.high) { field, value in
+                compressorControlCard(item: compressionBandDefinitions[2], settings: job.editableMasteringSettings.multibandCompression.high) { field, value in
                     job.updateMasteringSettings { settings in
                         switch field {
                         case .ratio:
@@ -315,7 +320,7 @@ struct ContentView: View {
                     }
                 }
 
-                sliderCard(title: "ステレオ幅", valueText: String(format: "%.2f", job.editableMasteringSettings.stereoWidth)) {
+                sliderCard(item: masteringSettingDefinitions[5], valueText: String(format: "%.2f", job.editableMasteringSettings.stereoWidth)) {
                     Slider(
                         value: binding(
                             get: { Double(job.editableMasteringSettings.stereoWidth) },
@@ -330,7 +335,15 @@ struct ContentView: View {
                     )
                 }
 
-                sliderCard(title: "サチュレーション量", valueText: String(format: "%.2f", job.editableMasteringSettings.saturationAmount)) {
+                sliderCard(
+                    item: TermDefinition(
+                        id: "saturation",
+                        label: "サチュレーション",
+                        reading: "さちゅれーしょん",
+                        description: "倍音を足して音の密度感を増やす処理です。強くしすぎると飽和して聞こえます。"
+                    ),
+                    valueText: String(format: "%.2f", job.editableMasteringSettings.saturationAmount)
+                ) {
                     Slider(
                         value: binding(
                             get: { Double(job.editableMasteringSettings.saturationAmount) },
@@ -775,19 +788,18 @@ struct ContentView: View {
                 }
             }
 
-            comparisonSection(
-                title: "入力 -> 補正後",
-                inputMetrics: job.inputMetrics,
-                outputMetrics: job.outputMetrics,
-                emptyMessage: "補正後の比較は、補正を実行すると表示されます。"
-            )
+            if let inputMetrics = job.inputMetrics {
+                LazyVGrid(columns: comparisonCardColumns, alignment: .leading, spacing: 14) {
+                    comparisonMetricsTable(input: inputMetrics, corrected: job.outputMetrics, mastered: job.masteredMetrics)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
 
-            comparisonSection(
-                title: "補正後 -> 最終版",
-                inputMetrics: job.outputMetrics,
-                outputMetrics: job.masteredMetrics,
-                emptyMessage: "最終版の比較は、マスタリングを実行すると表示されます。"
-            )
+                    comparisonBandComparisonCard(input: inputMetrics, corrected: job.outputMetrics, mastered: job.masteredMetrics)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                }
+            } else {
+                Text("音声を選ぶと、ここに入力・補正後・最終版の比較がまとめて表示されます。")
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -803,9 +815,15 @@ struct ContentView: View {
             }
 
             if let corrected = job.outputMetrics, let mastered = job.masteredMetrics {
+                let stages = comparisonStages(
+                    input: job.inputMetrics,
+                    corrected: corrected,
+                    mastered: mastered
+                )
+
                 HStack(alignment: .top, spacing: 14) {
-                    masteringRadarCard(corrected: corrected, mastered: mastered)
-                    masteringBalanceCurveCard(corrected: corrected, mastered: mastered)
+                    comparisonRadarCard(stages: stages)
+                    comparisonBalanceCurveCard(stages: stages)
                 }
 
                 Text("左で仕上がりの方向、右で帯域の触り方を見比べられます。")
@@ -818,18 +836,26 @@ struct ContentView: View {
         }
     }
 
-    private func masteringRadarCard(corrected: AudioMetricSnapshot, mastered: AudioMetricSnapshot) -> some View {
-        let axes = masteringRadarAxes(corrected: corrected, mastered: mastered)
+    private func comparisonRadarCard(stages: [ComparisonStageMetrics]) -> some View {
+        let axes = comparisonRadarAxes(stages: stages)
 
         return VStack(alignment: .leading, spacing: 10) {
-            Text("仕上がりの方向")
-                .font(.headline)
+            HStack {
+                Text("仕上がりの方向")
+                    .font(.headline)
+                Spacer()
+                termHelpButton(
+                    title: "レーダーチャートの見方",
+                    reading: "れーだーちゃーとのみかた",
+                    description: "外側ほど、その指標が強い状態です。緑が補正後、オレンジが最終版を表します。"
+                )
+            }
 
             GeometryReader { proxy in
                 let size = min(proxy.size.width, proxy.size.height)
                 let center = CGPoint(x: proxy.size.width * 0.5, y: proxy.size.height * 0.5)
-                let radius = size * 0.30
-                let ringColor = Color.secondary.opacity(0.14)
+                let radius = size * 0.37
+                let ringColor = Color.secondary.opacity(0.22)
 
                 ZStack {
                     ForEach(1...4, id: \.self) { step in
@@ -838,7 +864,7 @@ struct ContentView: View {
                             center: center,
                             radius: radius
                         )
-                        .stroke(ringColor, lineWidth: 1)
+                        .stroke(ringColor, lineWidth: 1.4)
                     }
 
                     ForEach(Array(axes.enumerated()), id: \.offset) { index, axis in
@@ -846,63 +872,61 @@ struct ContentView: View {
                             path.move(to: center)
                             path.addLine(to: radarPoint(value: 1, index: index, total: axes.count, center: center, radius: radius))
                         }
-                        .stroke(ringColor, lineWidth: 1)
+                        .stroke(ringColor, lineWidth: 1.4)
 
                         Text(axis.label)
-                            .font(.caption)
+                            .font(.caption.weight(.semibold))
                             .foregroundStyle(.secondary)
                             .position(
-                                radarPoint(value: 1.18, index: index, total: axes.count, center: center, radius: radius)
+                                radarPoint(value: 1.24, index: index, total: axes.count, center: center, radius: radius)
                             )
                     }
 
-                    radarPolygonPath(
-                        values: axes.map(\.corrected),
-                        center: center,
-                        radius: radius
-                    )
-                    .fill(Color.green.opacity(0.14))
+                    ForEach(Array(stages.enumerated()), id: \.offset) { index, stage in
+                        let values = axes.map { $0.values[index] }
+                        radarPolygonPath(
+                            values: values,
+                            center: center,
+                            radius: radius
+                        )
+                        .fill(stage.color.opacity(0.18))
 
-                    radarPolygonPath(
-                        values: axes.map(\.corrected),
-                        center: center,
-                        radius: radius
-                    )
-                    .stroke(Color.green, lineWidth: 2)
-
-                    radarPolygonPath(
-                        values: axes.map(\.mastered),
-                        center: center,
-                        radius: radius
-                    )
-                    .fill(Color.orange.opacity(0.14))
-
-                    radarPolygonPath(
-                        values: axes.map(\.mastered),
-                        center: center,
-                        radius: radius
-                    )
-                    .stroke(Color.orange, lineWidth: 2)
+                        radarPolygonPath(
+                            values: values,
+                            center: center,
+                            radius: radius
+                        )
+                        .stroke(stage.color, style: StrokeStyle(lineWidth: 3.2, dash: stage.id == "input" ? [7, 4] : []))
+                    }
                 }
             }
-            .frame(height: 280)
+            .frame(height: 360)
 
-            chartLegend
+            chartLegend(stages: stages)
+            termHelpGrid(items: radarTermDefinitions)
         }
         .padding(14)
-        .frame(maxWidth: .infinity, minHeight: 360, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: 500, alignment: .topLeading)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
     }
 
-    private func masteringBalanceCurveCard(corrected: AudioMetricSnapshot, mastered: AudioMetricSnapshot) -> some View {
-        let points = masteringCurvePoints(corrected: corrected, mastered: mastered)
+    private func comparisonBalanceCurveCard(stages: [ComparisonStageMetrics]) -> some View {
+        let points = comparisonCurvePoints(stages: stages)
         let values = points.map(\.value)
         let minValue = floor((values.min() ?? -36) / 2) * 2 - 2
         let maxValue = ceil((values.max() ?? -12) / 2) * 2 + 2
 
         return VStack(alignment: .leading, spacing: 8) {
-            Text("周波数バランス")
-                .font(.headline)
+            HStack {
+                Text("周波数バランス")
+                    .font(.headline)
+                Spacer()
+                termHelpButton(
+                    title: "周波数バランスの見方",
+                    reading: "しゅうはすうばらんすのみかた",
+                    description: "青が入力、緑が補正後、オレンジが最終版です。同じ帯域で線が上下するほど、その帯域の量が変わっています。"
+                )
+            }
 
             Chart(points) { point in
                 LineMark(
@@ -922,6 +946,7 @@ struct ContentView: View {
             }
             .chartLegend(.hidden)
             .chartForegroundStyleScale([
+                "入力": Color.blue,
                 "補正後": Color.green,
                 "最終版": Color.orange
             ])
@@ -944,76 +969,364 @@ struct ContentView: View {
                     }
                 }
             }
-            .frame(height: 280)
+            .frame(height: 390)
 
-            chartLegend
+            chartLegend(stages: stages)
+            termHelpGrid(items: comparisonBandTermDefinitions)
         }
         .padding(14)
-        .frame(maxWidth: .infinity, minHeight: 360, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: 500, alignment: .topLeading)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
     }
 
-    private var chartLegend: some View {
+    private func chartLegend(stages: [ComparisonStageMetrics]) -> some View {
         HStack(spacing: 14) {
-            legendChip(color: .green, label: "補正後")
-            legendChip(color: .orange, label: "最終版")
+            ForEach(stages) { stage in
+                legendChip(color: stage.color, label: stage.label, dashed: stage.id == "input")
+            }
         }
     }
 
-    private func legendChip(color: Color, label: String) -> some View {
+    private func legendChip(color: Color, label: String, dashed: Bool) -> some View {
         HStack(spacing: 6) {
-            Circle()
-                .fill(color)
-                .frame(width: 8, height: 8)
+            if dashed {
+                RoundedRectangle(cornerRadius: 3)
+                    .stroke(style: StrokeStyle(lineWidth: 2, dash: [4, 3]))
+                    .foregroundStyle(color)
+                    .frame(width: 16, height: 8)
+            } else {
+                Circle()
+                    .fill(color)
+                    .frame(width: 8, height: 8)
+            }
             Text(label)
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
     }
 
-    private func masteringRadarAxes(corrected: AudioMetricSnapshot, mastered: AudioMetricSnapshot) -> [RadarAxisDatum] {
+    private func comparisonStages(
+        input: AudioMetricSnapshot?,
+        corrected: AudioMetricSnapshot?,
+        mastered: AudioMetricSnapshot?
+    ) -> [ComparisonStageMetrics] {
+        var stages: [ComparisonStageMetrics] = []
+        if let input {
+            stages.append(ComparisonStageMetrics(id: "input", label: "入力", color: .blue, metrics: input))
+        }
+        if let corrected {
+            stages.append(ComparisonStageMetrics(id: "corrected", label: "補正後", color: .green, metrics: corrected))
+        }
+        if let mastered {
+            stages.append(ComparisonStageMetrics(id: "mastered", label: "最終版", color: .orange, metrics: mastered))
+        }
+        return stages
+    }
+
+    private func comparisonRadarAxes(stages: [ComparisonStageMetrics]) -> [RadarAxisDatum] {
         let targetLoudness = Double(job.editableMasteringSettings.targetLoudness)
         let targetPeak = Double(job.editableMasteringSettings.peakCeilingDB)
 
         return [
             RadarAxisDatum(
-                label: "音量感",
-                corrected: loudnessRadarScore(corrected.integratedLoudnessLUFS, target: targetLoudness),
-                mastered: loudnessRadarScore(mastered.integratedLoudnessLUFS, target: targetLoudness)
+                label: "ラウドネス",
+                values: stages.map { loudnessRadarScore($0.metrics.integratedLoudnessLUFS, target: targetLoudness) }
             ),
             RadarAxisDatum(
-                label: "安全性",
-                corrected: safetyRadarScore(corrected.truePeakDBFS, target: targetPeak),
-                mastered: safetyRadarScore(mastered.truePeakDBFS, target: targetPeak)
+                label: "トゥルーピーク",
+                values: stages.map { safetyRadarScore($0.metrics.truePeakDBFS, target: targetPeak) }
             ),
             RadarAxisDatum(
-                label: "聞きやすさ",
-                corrected: listenabilityRadarScore(corrected),
-                mastered: listenabilityRadarScore(mastered)
+                label: "明瞭度",
+                values: stages.map { listenabilityRadarScore($0.metrics) }
             ),
             RadarAxisDatum(
-                label: "広がり",
-                corrected: widthRadarScore(corrected.stereoWidth),
-                mastered: widthRadarScore(mastered.stereoWidth)
+                label: "ステレオ幅",
+                values: stages.map { widthRadarScore($0.metrics.stereoWidth) }
             ),
             RadarAxisDatum(
-                label: "明るさ",
-                corrected: brightnessRadarScore(corrected),
-                mastered: brightnessRadarScore(mastered)
+                label: "高域バランス",
+                values: stages.map { brightnessRadarScore($0.metrics) }
             )
         ]
     }
 
-    private func masteringCurvePoints(corrected: AudioMetricSnapshot, mastered: AudioMetricSnapshot) -> [MasteringCurvePoint] {
-        let correctedMap = Dictionary(uniqueKeysWithValues: corrected.masteringBandEnergies.map { ($0.id, $0.levelDB) })
-        let masteredMap = Dictionary(uniqueKeysWithValues: mastered.masteringBandEnergies.map { ($0.id, $0.levelDB) })
-
-        return AudioBandCatalog.masteringBands.enumerated().flatMap { index, band in
-            [
-                MasteringCurvePoint(order: index, label: band.label, series: "補正後", value: correctedMap[band.id] ?? -120),
-                MasteringCurvePoint(order: index, label: band.label, series: "最終版", value: masteredMap[band.id] ?? -120)
-            ]
+    private func comparisonCurvePoints(stages: [ComparisonStageMetrics]) -> [MasteringCurvePoint] {
+        AudioBandCatalog.comparisonBands.enumerated().flatMap { index, band in
+            stages.map { stage in
+                let value = stage.metrics.bandEnergies.first { $0.id == band.id }?.levelDB ?? -120
+                return MasteringCurvePoint(order: index, label: band.label, series: stage.label, value: value)
+            }
         }
+    }
+
+    private func comparisonMetricsTable(
+        input: AudioMetricSnapshot,
+        corrected: AudioMetricSnapshot?,
+        mastered: AudioMetricSnapshot?
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("主な数値")
+                    .font(.title3.weight(.bold))
+                Spacer()
+                termHelpButton(
+                    title: "主な数値の見方",
+                    reading: "おもなすうちのみかた",
+                    description: "入力、補正後、最終版を同じ尺度で並べています。オレンジ側に近づくほど、最終仕上げでの変化が大きいです。"
+                )
+            }
+
+            Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 14) {
+                GridRow {
+                    Text("項目")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text("入力")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text("補正後")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text("最終版")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+
+                metricsTableRow(item: mainMetricDefinitions[0], input: input.integratedLoudnessLUFS, corrected: corrected?.integratedLoudnessLUFS, mastered: mastered?.integratedLoudnessLUFS, format: .lufs)
+                metricsTableRow(item: mainMetricDefinitions[1], input: input.truePeakDBFS, corrected: corrected?.truePeakDBFS, mastered: mastered?.truePeakDBFS, format: .dBFS)
+                metricsTableRow(item: mainMetricDefinitions[2], input: input.stereoWidth, corrected: corrected?.stereoWidth, mastered: mastered?.stereoWidth, format: .ratio(2))
+                metricsTableRow(item: mainMetricDefinitions[3], input: input.harshnessScore, corrected: corrected?.harshnessScore, mastered: mastered?.harshnessScore, format: .score(2))
+                metricsTableRow(item: bandTermDefinitions[0], input: inputBandValue(input, id: "low"), corrected: corrected.flatMap { inputBandValue($0, id: "low") }, mastered: mastered.flatMap { inputBandValue($0, id: "low") }, format: .dBFS)
+                metricsTableRow(item: bandTermDefinitions[1], input: inputBandValue(input, id: "lowMid"), corrected: corrected.flatMap { inputBandValue($0, id: "lowMid") }, mastered: mastered.flatMap { inputBandValue($0, id: "lowMid") }, format: .dBFS)
+                metricsTableRow(item: bandTermDefinitions[2], input: inputBandValue(input, id: "presence"), corrected: corrected.flatMap { inputBandValue($0, id: "presence") }, mastered: mastered.flatMap { inputBandValue($0, id: "presence") }, format: .dBFS)
+                metricsTableRow(item: bandTermDefinitions[3], input: inputBandValue(input, id: "air"), corrected: corrected.flatMap { inputBandValue($0, id: "air") }, mastered: mastered.flatMap { inputBandValue($0, id: "air") }, format: .dBFS)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, minHeight: 470, alignment: .topLeading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    private func comparisonBandComparisonCard(
+        input: AudioMetricSnapshot,
+        corrected: AudioMetricSnapshot?,
+        mastered: AudioMetricSnapshot?
+    ) -> some View {
+        let correctedMap = Dictionary(uniqueKeysWithValues: (corrected?.bandEnergies ?? []).map { ($0.id, $0) })
+        let masteredMap = Dictionary(uniqueKeysWithValues: (mastered?.bandEnergies ?? []).map { ($0.id, $0) })
+        let rows = input.bandEnergies.map { inputMetric in
+            ComparisonBandRow(
+                id: inputMetric.id,
+                label: inputMetric.label,
+                rangeDescription: inputMetric.rangeDescription,
+                input: inputMetric.levelDB,
+                corrected: correctedMap[inputMetric.id]?.levelDB,
+                mastered: masteredMap[inputMetric.id]?.levelDB
+            )
+        }
+
+        let allValues = rows.flatMap { row in
+            [row.input, row.corrected ?? row.input, row.mastered ?? row.corrected ?? row.input]
+        }
+        let maxLevel = (allValues.max() ?? 0) + 3
+        let minLevel = min((allValues.min() ?? -60), -40) - 3
+
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("帯域別の見え方")
+                    .font(.title3.weight(.bold))
+                Spacer()
+                termHelpButton(
+                    title: "帯域別の見え方",
+                    reading: "たいいきべつのみえかた",
+                    description: "各帯域の量を、入力・補正後・最終版で並べています。右側の差分は、補正段と最終仕上げ段でどれだけ変わったかを示します。"
+                )
+            }
+
+            ForEach(rows) { row in
+                comparisonBandRow(row, minLevel: minLevel, maxLevel: maxLevel)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, minHeight: 470, alignment: .topLeading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    private func comparisonBandRow(_ row: ComparisonBandRow, minLevel: Double, maxLevel: Double) -> some View {
+        let correctionDelta = row.corrected.map { $0 - row.input }
+        let masteringDelta = {
+            guard let corrected = row.corrected, let mastered = row.mastered else { return Optional<Double>.none }
+            return mastered - corrected
+        }()
+
+        return HStack(alignment: .top, spacing: 14) {
+            VStack(alignment: .leading, spacing: 6) {
+                termLabel(item: termDefinition(for: row.id, from: comparisonBandTermDefinitions))
+                Text(row.rangeDescription)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(width: 120, alignment: .leading)
+
+            VStack(spacing: 8) {
+                comparisonBandBar(title: "入力", value: row.input, minLevel: minLevel, maxLevel: maxLevel, tint: .blue)
+                comparisonBandBar(title: "補正後", value: row.corrected, minLevel: minLevel, maxLevel: maxLevel, tint: .green)
+                comparisonBandBar(title: "最終版", value: row.mastered, minLevel: minLevel, maxLevel: maxLevel, tint: .orange)
+            }
+            .frame(maxWidth: .infinity)
+
+            VStack(alignment: .trailing, spacing: 8) {
+                Text("差分")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                deltaPairLine(title: "補正", value: correctionDelta)
+                deltaPairLine(title: "仕上", value: masteringDelta)
+            }
+            .frame(width: 110, alignment: .trailing)
+        }
+    }
+
+    private func comparisonBandBar(title: String, value: Double?, minLevel: Double, maxLevel: Double, tint: Color) -> some View {
+        let normalized = value.map { max(0, min(1, ($0 - minLevel) / max(maxLevel - minLevel, 1))) } ?? 0
+
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(title)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(value.map { formattedValue($0, format: .dBFS) } ?? "--")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.secondary.opacity(0.12))
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(tint.gradient)
+                        .frame(width: proxy.size.width * normalized)
+                }
+            }
+            .frame(height: 10)
+        }
+    }
+
+    private func deltaPairLine(title: String, value: Double?) -> some View {
+        HStack(spacing: 6) {
+            Text(title)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            Text(value.map { formattedDelta($0, format: .dBFS) } ?? "--")
+                .font(.subheadline.monospacedDigit())
+                .foregroundStyle(deltaChipColor(for: value))
+        }
+    }
+
+    private func metricsTableRow(item: TermDefinition, input: Double?, corrected: Double?, mastered: Double?, format: MetricFormat) -> GridRow<some View> {
+        GridRow {
+            termLabel(item: item)
+            metricsTableValue(input, format: format, tint: .blue)
+            metricsTableValue(corrected, format: format, tint: .green)
+            metricsTableValue(mastered, format: format, tint: .orange)
+        }
+    }
+
+    private func metricsTableValue(_ value: Double?, format: MetricFormat, tint: Color) -> some View {
+        Text(value.map { formattedValue($0, format: format) } ?? "--")
+            .font(.title3.monospacedDigit().weight(.semibold))
+            .foregroundStyle(value == nil ? .secondary : tint)
+    }
+
+    private func inputBandValue(_ metrics: AudioMetricSnapshot, id: String) -> Double? {
+        metrics.masteringBandEnergies.first { $0.id == id }?.levelDB
+    }
+
+    private func termLabel(item: TermDefinition) -> some View {
+        HStack(spacing: 6) {
+            Text(item.label)
+                .font(.title3.weight(.semibold))
+            termHelpButton(title: item.label, reading: item.reading, description: item.description)
+        }
+    }
+
+    private func termHelpButton(title: String, reading: String, description: String) -> some View {
+        TermHelpButton(title: title, reading: reading, description: description)
+    }
+
+    private func termHelpGrid(items: [TermDefinition]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("用語ガイド")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 8) {
+                ForEach(items) { item in
+                    termLabel(item: item)
+                }
+            }
+        }
+    }
+
+    private func termDefinition(for id: String, from items: [TermDefinition]) -> TermDefinition {
+        items.first { $0.id == id } ?? TermDefinition(id: id, label: id, reading: id, description: "")
+    }
+
+    private var radarTermDefinitions: [TermDefinition] {
+        [
+            TermDefinition(id: "loudness", label: "ラウドネス", reading: "らうどねす", description: "曲全体の平均的な音量感です。配信先で聞こえる大きさの目安になります。"),
+            TermDefinition(id: "truePeak", label: "トゥルーピーク", reading: "とぅるーぴーく", description: "波形の本当の最大ピークです。上がりすぎると歪みやすくなります。"),
+            TermDefinition(id: "clarity", label: "明瞭度", reading: "めいりょうど", description: "中低域のこもりと高域の耳障りさを合わせて見た、聞き取りやすさの目安です。"),
+            TermDefinition(id: "stereoWidth", label: "ステレオ幅", reading: "すてれおはば", description: "左右への広がり具合です。大きいほど広く感じやすいです。"),
+            TermDefinition(id: "highBalance", label: "高域バランス", reading: "こういきばらんす", description: "高い帯域の量感です。上がるほど明るく抜けた印象になりやすいです。")
+        ]
+    }
+
+    private var bandTermDefinitions: [TermDefinition] {
+        [
+            TermDefinition(id: "low", label: "低域", reading: "ていいき", description: "20Hz〜180Hz 付近です。キックやベースの土台になる帯域です。"),
+            TermDefinition(id: "lowMid", label: "中低域", reading: "ちゅうていいき", description: "180Hz〜500Hz 付近です。増えすぎるとこもりや重さとして感じやすい帯域です。"),
+            TermDefinition(id: "presence", label: "プレゼンス帯域", reading: "ぷれぜんすたいいき", description: "2.5kHz〜5.5kHz 付近です。声や主旋律の前に出る感じに関わる帯域です。"),
+            TermDefinition(id: "air", label: "エアー帯域", reading: "えあーたいいき", description: "10kHz〜20kHz 付近です。空気感や高域の伸びに関わる帯域です。")
+        ]
+    }
+
+    private var comparisonBandTermDefinitions: [TermDefinition] {
+        [
+            TermDefinition(id: "low", label: "低域", reading: "ていいき", description: "0Hz〜5kHz の比較用まとめ帯域です。低音から中域の主要成分をざっくり含みます。"),
+            TermDefinition(id: "presence", label: "中高域", reading: "ちゅうこういき", description: "5kHz〜10kHz の帯域です。子音の明瞭さや抜けに関わりやすい帯域です。"),
+            TermDefinition(id: "high", label: "高域", reading: "こういき", description: "10kHz〜16kHz の帯域です。明るさやきらめきに関わります。"),
+            TermDefinition(id: "air", label: "超高域", reading: "ちょうこういき", description: "16kHz〜24kHz の帯域です。空気感や高域の余韻に関わります。")
+        ]
+    }
+
+    private var mainMetricDefinitions: [TermDefinition] {
+        [
+            radarTermDefinitions[0],
+            radarTermDefinitions[1],
+            radarTermDefinitions[3],
+            TermDefinition(id: "harshness", label: "ハーシュネス", reading: "はーしゅねす", description: "高域の耳障りさの指標です。数値が高いほど刺さりやすい傾向があります。")
+        ]
+    }
+
+    private var masteringSettingDefinitions: [TermDefinition] {
+        [
+            bandTermDefinitions[0],
+            bandTermDefinitions[1],
+            bandTermDefinitions[2],
+            bandTermDefinitions[3],
+            TermDefinition(id: "deEss", label: "ハーシュネス抑制", reading: "はーしゅねすよくせい", description: "歯擦音や耳に痛い高域だけを抑える処理です。強くしすぎると抜けも弱くなります。"),
+            TermDefinition(id: "stereoWidth", label: "ステレオ幅", reading: "すてれおはば", description: "左右への広がり具合です。広げすぎると中心のまとまりが弱くなることがあります。")
+        ]
+    }
+
+    private var compressionBandDefinitions: [TermDefinition] {
+        [
+            TermDefinition(id: "lowComp", label: "低域コンプ", reading: "ていいきこんぷ", description: "低域のコンプレッサーです。キックやベースの暴れを抑えて、量感を整えます。"),
+            TermDefinition(id: "midComp", label: "中域コンプ", reading: "ちゅういきこんぷ", description: "中域のコンプレッサーです。声や主旋律の押し出しを整えます。"),
+            TermDefinition(id: "highComp", label: "高域コンプ", reading: "こういきこんぷ", description: "高域のコンプレッサーです。明るさや刺激感の出過ぎを整えます。")
+        ]
     }
 
     private func loudnessRadarScore(_ value: Double, target: Double) -> Double {
@@ -1072,8 +1385,23 @@ struct ContentView: View {
 
     private struct RadarAxisDatum {
         let label: String
-        let corrected: Double
-        let mastered: Double
+        let values: [Double]
+    }
+
+    private struct ComparisonStageMetrics: Identifiable {
+        let id: String
+        let label: String
+        let color: Color
+        let metrics: AudioMetricSnapshot
+    }
+
+    private struct ComparisonBandRow: Identifiable {
+        let id: String
+        let label: String
+        let rangeDescription: String
+        let input: Double
+        let corrected: Double?
+        let mastered: Double?
     }
 
     private struct MasteringCurvePoint: Identifiable {
@@ -1082,6 +1410,45 @@ struct ContentView: View {
         let label: String
         let series: String
         let value: Double
+    }
+
+    private struct TermHelpButton: View {
+        let title: String
+        let reading: String
+        let description: String
+        @State private var isPresented = false
+
+        var body: some View {
+            Button {
+                isPresented.toggle()
+            } label: {
+                Image(systemName: "questionmark.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .popover(isPresented: $isPresented, arrowEdge: .bottom) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(title)
+                        .font(.headline)
+                    Text(reading)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(description)
+                        .font(.subheadline)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(14)
+                .frame(width: 260, alignment: .leading)
+            }
+        }
+    }
+
+    private struct TermDefinition: Identifiable {
+        let id: String
+        let label: String
+        let reading: String
+        let description: String
     }
 
     private var spectrogramSection: some View {
@@ -1599,13 +1966,12 @@ struct ContentView: View {
     }
 
     private func compressorControlCard(
-        title: String,
+        item: TermDefinition,
         settings: BandCompressorSettings,
         onChange: @escaping (CompressorField, Double) -> Void
     ) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.subheadline.weight(.semibold))
+            termLabel(item: item)
             Text(String(format: "Threshold %.1f dB / Ratio %.2f", settings.thresholdDB, settings.ratio))
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -1616,10 +1982,9 @@ struct ContentView: View {
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
     }
 
-    private func sliderCard<Content: View>(title: String, valueText: String, @ViewBuilder content: () -> Content) -> some View {
+    private func sliderCard<Content: View>(item: TermDefinition, valueText: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.subheadline.weight(.semibold))
+            termLabel(item: item)
             Text(valueText)
                 .font(.caption)
                 .foregroundStyle(.secondary)

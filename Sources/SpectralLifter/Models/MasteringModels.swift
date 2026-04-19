@@ -23,9 +23,9 @@ enum MasteringProfile: String, CaseIterable, Identifiable, Sendable {
         case .natural:
             return "原音の雰囲気を残しながら整えます"
         case .streaming:
-            return "聞きやすさと音量感のバランスを取ります"
+            return "ラウドネスとトゥルーピークを配信向けに整えます"
         case .forward:
-            return "存在感を前に出して仕上げます"
+            return "プレゼンス帯域とラウドネスを前に出して仕上げます"
         }
     }
 
@@ -201,12 +201,12 @@ enum AudioComparisonSide: String, CaseIterable, Identifiable {
 
 enum MasteringStep: String, CaseIterable, Hashable {
     case analyze = "補正済み音源を解析します"
-    case tone = "トーンを整えます"
-    case deEss = "刺さりを整えます"
+    case tone = "帯域バランスを整えます"
+    case deEss = "ハーシュネスを抑えます"
     case dynamics = "帯域のバランスを整えます"
     case saturate = "音の密度を整えます"
-    case stereo = "広がりを整えます"
-    case loudness = "音量を整えます"
+    case stereo = "ステレオ幅を整えます"
+    case loudness = "ラウドネスを整えます"
     case save = "マスタリング済みファイルを書き出します"
 
     var title: String {
@@ -214,17 +214,17 @@ enum MasteringStep: String, CaseIterable, Hashable {
         case .analyze:
             return "解析"
         case .tone:
-            return "トーン"
+            return "帯域バランス"
         case .deEss:
-            return "刺さり抑制"
+            return "ハーシュネス抑制"
         case .dynamics:
             return "帯域制御"
         case .saturate:
             return "密度調整"
         case .stereo:
-            return "広がり"
+            return "ステレオ幅"
         case .loudness:
-            return "音量"
+            return "ラウドネス"
         case .save:
             return "書き出し"
         }

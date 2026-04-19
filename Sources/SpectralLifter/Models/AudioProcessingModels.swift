@@ -28,10 +28,10 @@ enum AudioBandCatalog {
     ]
 
     static let masteringBands: [AudioBandDescriptor] = [
-        AudioBandDescriptor(id: "low", label: "低音", rangeDescription: "20-180Hz", lowerBound: 20, upperBound: 180),
-        AudioBandDescriptor(id: "lowMid", label: "こもりカット", rangeDescription: "180-500Hz", lowerBound: 180, upperBound: 500),
-        AudioBandDescriptor(id: "presence", label: "存在感", rangeDescription: "2.5-5.5kHz", lowerBound: 2_500, upperBound: 5_500),
-        AudioBandDescriptor(id: "air", label: "空気感", rangeDescription: "10-20kHz", lowerBound: 10_000, upperBound: 20_000)
+        AudioBandDescriptor(id: "low", label: "低域", rangeDescription: "20-180Hz", lowerBound: 20, upperBound: 180),
+        AudioBandDescriptor(id: "lowMid", label: "中低域", rangeDescription: "180-500Hz", lowerBound: 180, upperBound: 500),
+        AudioBandDescriptor(id: "presence", label: "プレゼンス帯域", rangeDescription: "2.5-5.5kHz", lowerBound: 2_500, upperBound: 5_500),
+        AudioBandDescriptor(id: "air", label: "エアー帯域", rangeDescription: "10-20kHz", lowerBound: 10_000, upperBound: 20_000)
     ]
 }
 
