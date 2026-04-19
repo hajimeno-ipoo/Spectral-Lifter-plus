@@ -37,6 +37,9 @@ struct MasteringPipelineTests {
         var settings = MasteringProfile.streaming.settings
         settings.targetLoudness = -13.2
         settings.stereoWidth = 1.15
+        settings.lowMidGain = 0.45
+        settings.presenceGain = 0.38
+        settings.deEsserAmount = 0.52
 
         let output = try await MasteringService().process(inputFile: inputURL, settings: settings) { _ in }
 

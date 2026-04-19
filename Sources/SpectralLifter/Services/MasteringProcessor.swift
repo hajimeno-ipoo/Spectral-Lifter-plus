@@ -5,6 +5,9 @@ struct MasteringProcessor {
         logger?.log(MasteringStep.tone.rawValue)
         var current = applyTone(signal: signal, analysis: analysis, settings: settings)
 
+        logger?.log(MasteringStep.deEss.rawValue)
+        current = applyDeEsser(signal: current, settings: settings)
+
         logger?.log(MasteringStep.dynamics.rawValue)
         current = applyMultibandCompression(signal: current, analysis: analysis, settings: settings.multibandCompression)
 
@@ -19,15 +22,65 @@ struct MasteringProcessor {
     }
 
     private func applyTone(signal: AudioSignal, analysis: MasteringAnalysis, settings: MasteringSettings) -> AudioSignal {
-        let lowAdjustment = settings.lowShelfGain + max(0, Float((analysis.midBandLevelDB - analysis.lowBandLevelDB) / 6))
-        let highAdjustment = settings.highShelfGain - analysis.harshnessScore * 0.7 + max(0, Float((analysis.midBandLevelDB - analysis.highBandLevelDB) / 8))
+        let lowAdjustment = settings.lowShelfGain + max(0, Float((analysis.midBandLevelDB - analysis.lowBandLevelDB) / 10))
+        let lowMidAdjustment = settings.lowMidGain + max(0, Float((analysis.lowBandLevelDB - analysis.midBandLevelDB) / 14))
+        let presenceAdjustment = settings.presenceGain + max(0, Float((analysis.midBandLevelDB - analysis.highBandLevelDB) / 14)) - analysis.harshnessScore * 0.25
+        let highAdjustment = settings.highShelfGain - analysis.harshnessScore * 0.58 + max(0, Float((analysis.midBandLevelDB - analysis.highBandLevelDB) / 10))
 
         let channels = signal.channels.map { channel in
-            let low = SpectralDSP.lowPass(channel, cutoff: 180, sampleRate: signal.sampleRate)
-            let high = SpectralDSP.highPass(channel, cutoff: 5_000, sampleRate: signal.sampleRate)
+            let low = SpectralDSP.lowPass(channel, cutoff: 120, sampleRate: signal.sampleRate)
+            let lowMid = SpectralDSP.lowPass(
+                SpectralDSP.highPass(channel, cutoff: 120, sampleRate: signal.sampleRate),
+                cutoff: 420,
+                sampleRate: signal.sampleRate
+            )
+            let presence = SpectralDSP.lowPass(
+                SpectralDSP.highPass(channel, cutoff: 2_500, sampleRate: signal.sampleRate),
+                cutoff: 5_500,
+                sampleRate: signal.sampleRate
+            )
+            let high = SpectralDSP.highPass(channel, cutoff: 10_000, sampleRate: signal.sampleRate)
             return channel.indices.map { index in
-                let boosted = channel[index] + low[index] * lowAdjustment * 0.12 + high[index] * highAdjustment * 0.08
+                let boosted = channel[index]
+                    + low[index] * lowAdjustment * 0.10
+                    - lowMid[index] * lowMidAdjustment * 0.08
+                    + presence[index] * presenceAdjustment * 0.08
+                    + high[index] * highAdjustment * 0.07
                 return tanhf(boosted)
+            }
+        }
+
+        return AudioSignal(channels: channels, sampleRate: signal.sampleRate)
+    }
+
+    private func applyDeEsser(signal: AudioSignal, settings: MasteringSettings) -> AudioSignal {
+        guard settings.deEsserAmount > 0.001 else { return signal }
+
+        let threshold = powf(10, settings.deEsserThresholdDB / 20)
+        let attackCoeff = expf(-1 / max(Float(signal.sampleRate) * 0.003, 1))
+        let releaseCoeff = expf(-1 / max(Float(signal.sampleRate) * 0.080, 1))
+
+        let channels = signal.channels.map { channel in
+            let sibilanceBand = SpectralDSP.lowPass(
+                SpectralDSP.highPass(channel, cutoff: 5_000, sampleRate: signal.sampleRate),
+                cutoff: 10_000,
+                sampleRate: signal.sampleRate
+            )
+
+            var envelope: Float = 0
+            return channel.indices.map { index in
+                let bandSample = sibilanceBand[index]
+                let level = abs(bandSample)
+                if level > envelope {
+                    envelope = attackCoeff * envelope + (1 - attackCoeff) * level
+                } else {
+                    envelope = releaseCoeff * envelope + (1 - releaseCoeff) * level
+                }
+
+                guard envelope > threshold else { return channel[index] }
+                let excess = min(2.5, max(0, (envelope - threshold) / max(threshold, 1e-6)))
+                let reduction = min(0.82, excess * settings.deEsserAmount * 0.55)
+                return tanhf(channel[index] - bandSample * reduction)
             }
         }
 
@@ -151,21 +204,44 @@ struct MasteringProcessor {
         let currentLoudness = MasteringAnalysisService.integratedLoudness(signal: signal)
         let gain = powf(10, (targetLKFS - currentLoudness) / 20)
         let peakCeiling = powf(10, peakCeilingDB / 20)
-        var channels = signal.channels.map { channel in channel.map { $0 * gain } }
+        let gainedChannels = signal.channels.map { channel in channel.map { $0 * gain } }
+        var channels = applyLinkedLimiter(gainedChannels, peakCeiling: peakCeiling, sampleRate: signal.sampleRate)
 
-        var peak = MasteringAnalysisService.approximateTruePeak(channels)
+        let peak = MasteringAnalysisService.approximateTruePeak(channels)
         if peak > peakCeiling {
-            let limiterGain = peakCeiling / peak
-            channels = channels.map { channel in
-                channel.map { tanhf($0 * limiterGain / max(peakCeiling, 1e-6)) * peakCeiling }
-            }
-            peak = MasteringAnalysisService.approximateTruePeak(channels)
-            if peak > peakCeiling {
-                let trim = peakCeiling / peak
-                channels = channels.map { $0.map { $0 * trim } }
-            }
+            let trim = peakCeiling / peak
+            channels = channels.map { $0.map { $0 * trim } }
         }
 
         return AudioSignal(channels: channels, sampleRate: signal.sampleRate)
+    }
+
+    private func applyLinkedLimiter(_ channels: [[Float]], peakCeiling: Float, sampleRate: Double) -> [[Float]] {
+        guard let first = channels.first else { return channels }
+        guard first.count > 0 else { return channels }
+
+        let releaseMs: Float = 110
+        let releaseCoeff = expf(-1 / max(Float(sampleRate) * releaseMs * 0.001, 1))
+        var gain: Float = 1
+        var limited = channels
+
+        for index in 0..<first.count {
+            let framePeak = channels.reduce(Float.zero) { partial, channel in
+                guard index < channel.count else { return partial }
+                return max(partial, abs(channel[index]))
+            }
+            let desiredGain = framePeak > peakCeiling ? peakCeiling / max(framePeak, 1e-6) : 1
+            if desiredGain < gain {
+                gain = desiredGain
+            } else {
+                gain = gain * releaseCoeff + (1 - releaseCoeff)
+            }
+
+            for channelIndex in limited.indices where index < limited[channelIndex].count {
+                limited[channelIndex][index] = limited[channelIndex][index] * gain
+            }
+        }
+
+        return limited
     }
 }

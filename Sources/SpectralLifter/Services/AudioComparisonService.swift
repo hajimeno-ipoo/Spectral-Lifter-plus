@@ -94,7 +94,7 @@ enum AudioComparisonService {
         )
     }
 
-    private static let bandTemplate: [(id: String, label: String, range: String, lower: Double, upper: Double)] = AudioBandCatalog.previewBands.map {
+    private static let bandTemplate: [(id: String, label: String, range: String, lower: Double, upper: Double)] = AudioBandCatalog.comparisonBands.map {
         ($0.id, $0.label, $0.rangeDescription, $0.lowerBound, $0.upperBound)
     }
 

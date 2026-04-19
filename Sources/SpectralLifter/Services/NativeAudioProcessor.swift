@@ -5,7 +5,12 @@ protocol AudioProcessingLogger {
 }
 
 struct NativeAudioProcessor {
-    func process(inputFile: URL, outputFile: URL, logger: AudioProcessingLogger? = nil) throws {
+    func process(
+        inputFile: URL,
+        outputFile: URL,
+        denoiseStrength: DenoiseStrength = .balanced,
+        logger: AudioProcessingLogger? = nil
+    ) throws {
         logger?.log("入力音声を読み込みます")
         let signal = try AudioFileService.loadAudio(from: inputFile)
 
@@ -13,7 +18,7 @@ struct NativeAudioProcessor {
         let analysis = AudioAnalyzer().analyze(signal: signal)
 
         logger?.log("ノイズを除去します")
-        let denoised = SpectralGateDenoiser().process(signal: signal)
+        let denoised = SpectralGateDenoiser(strength: denoiseStrength).process(signal: signal)
 
         logger?.log("高域を補完します")
         let upscaled = HarmonicUpscaler().process(signal: denoised, analysis: analysis)
@@ -102,13 +107,23 @@ private struct AudioAnalyzer {
 }
 
 private struct SpectralGateDenoiser {
-    let passes = 2
-    let thresholdMultiplier: Float = 1.5
+    let strength: DenoiseStrength
+
+    private var tuning: DenoiseTuning {
+        switch strength {
+        case .gentle:
+            return DenoiseTuning(passes: 1, thresholdMultiplier: 1.28, lowBandFloor: 0.22, highBandFloor: 0.33, quietPercentile: 16, transientProtection: 0.28)
+        case .balanced:
+            return DenoiseTuning(passes: 2, thresholdMultiplier: 1.46, lowBandFloor: 0.16, highBandFloor: 0.28, quietPercentile: 20, transientProtection: 0.22)
+        case .strong:
+            return DenoiseTuning(passes: 3, thresholdMultiplier: 1.68, lowBandFloor: 0.11, highBandFloor: 0.22, quietPercentile: 26, transientProtection: 0.16)
+        }
+    }
 
     func process(signal: AudioSignal) -> AudioSignal {
         let channels = signal.channels.map { channel in
             var current = channel
-            for _ in 0..<passes {
+            for _ in 0..<tuning.passes {
                 current = processPass(current)
             }
             return current
@@ -122,13 +137,14 @@ private struct SpectralGateDenoiser {
         let binCount = spectrogram.binCount
         var noiseProfile = Array(repeating: Float.zero, count: binCount)
         let frameEnergy = spectrogram.frameAverageMagnitudes()
-        let quietThreshold = SpectralDSP.percentile(frameEnergy, 20)
+        let quietThreshold = SpectralDSP.percentile(frameEnergy, tuning.quietPercentile)
         let quietFrameIndices = frameEnergy.enumerated().compactMap { index, value in
             value <= quietThreshold ? index : nil
         }
         let sourceFrameIndices = quietFrameIndices.isEmpty ? Array(0..<spectrogram.frameCount) : quietFrameIndices
         var noiseSums = Array(repeating: Float.zero, count: binCount)
         var noiseMinimums = Array(repeating: Float.greatestFiniteMagnitude, count: binCount)
+        let smoothedFrameEnergy = SpectralDSP.movingAverage(frameEnergy, windowSize: 7)
 
         for frameIndex in sourceFrameIndices {
             for binIndex in 0..<binCount {
@@ -142,17 +158,22 @@ private struct SpectralGateDenoiser {
         for binIndex in 0..<binCount {
             let averageNoise = noiseSums[binIndex] / sourceCount
             let minimumNoise = noiseMinimums[binIndex].isFinite ? noiseMinimums[binIndex] : averageNoise
-            let baseNoise = averageNoise * 0.85 + minimumNoise * 0.15
-            let highBandBias: Float = binIndex > (binCount * 3 / 5) ? 1.03 : 1.0
+            let baseNoise = averageNoise * 0.8 + minimumNoise * 0.2
+            let normalizedBand = Float(binIndex) / Float(max(binCount - 1, 1))
+            let highBandBias: Float = 0.94 + powf(normalizedBand, 1.25) * 0.18
             noiseProfile[binIndex] = baseNoise * highBandBias
         }
 
         for frameIndex in 0..<spectrogram.frameCount {
+            let transientRatio = frameEnergy[frameIndex] / max(smoothedFrameEnergy[frameIndex], 1e-6)
+            let transientLift = max(0, min(0.35, (transientRatio - 1) * tuning.transientProtection))
             for binIndex in 0..<spectrogram.binCount {
                 let magnitude = hypotf(spectrogram.real[frameIndex][binIndex], spectrogram.imag[frameIndex][binIndex])
-                let threshold = noiseProfile[binIndex] * thresholdMultiplier
-                let floor: Float = binIndex > spectrogram.binCount / 2 ? 0.28 : 0.12
-                let mask = max(floor, min(1.0, (magnitude - threshold) / max(magnitude, 1e-6)))
+                let normalizedBand = Float(binIndex) / Float(max(spectrogram.binCount - 1, 1))
+                let threshold = noiseProfile[binIndex] * tuning.thresholdMultiplier * (0.92 + powf(normalizedBand, 1.1) * 0.24)
+                let floor = tuning.lowBandFloor + (tuning.highBandFloor - tuning.lowBandFloor) * powf(normalizedBand, 1.25)
+                let rawMask = max(floor, min(1.0, (magnitude - threshold) / max(magnitude, 1e-6)))
+                let mask = min(1.0, rawMask + transientLift)
                 spectrogram.real[frameIndex][binIndex] *= mask
                 spectrogram.imag[frameIndex][binIndex] *= mask
             }
@@ -160,6 +181,15 @@ private struct SpectralGateDenoiser {
 
         return SpectralDSP.istft(spectrogram)
     }
+}
+
+private struct DenoiseTuning {
+    let passes: Int
+    let thresholdMultiplier: Float
+    let lowBandFloor: Float
+    let highBandFloor: Float
+    let quietPercentile: Float
+    let transientProtection: Float
 }
 
 private struct MultibandDynamicsProcessor {
@@ -235,28 +265,53 @@ private struct HarmonicUpscaler {
 private struct LoudnessProcessor {
     let targetLKFS: Float = -14
     let peakLimitDB: Float = -1
+    let limiterReleaseMs: Float = 120
 
     func process(signal: AudioSignal) -> AudioSignal {
         let loudness = integratedLoudness(signal)
         let gain = powf(10, (targetLKFS - loudness) / 20)
         let peakLimit = powf(10, peakLimitDB / 20)
 
-        var channels = signal.channels.map { channel in
+        let gainedChannels = signal.channels.map { channel in
             channel.map { $0 * gain }
         }
-        var peak = approximateTruePeak(channels: channels)
+        var channels = applyLinkedLimiter(gainedChannels, peakLimit: peakLimit, sampleRate: signal.sampleRate)
+
+        let peak = approximateTruePeak(channels: channels)
         if peak > peakLimit {
-            let limiterGain = peakLimit / peak
-            channels = channels.map { channel in
-                channel.map { tanhf($0 * limiterGain / peakLimit) * peakLimit }
-            }
-            peak = approximateTruePeak(channels: channels)
-            if peak > peakLimit {
-                let trim = peakLimit / peak
-                channels = channels.map { $0.map { $0 * trim } }
-            }
+            let trim = peakLimit / peak
+            channels = channels.map { $0.map { $0 * trim } }
         }
         return AudioSignal(channels: channels, sampleRate: signal.sampleRate)
+    }
+
+    private func applyLinkedLimiter(_ channels: [[Float]], peakLimit: Float, sampleRate: Double) -> [[Float]] {
+        guard let first = channels.first else { return channels }
+        guard first.count > 0 else { return channels }
+
+        let releaseCoeff = expf(-1 / max(Float(sampleRate) * limiterReleaseMs * 0.001, 1))
+        var gain: Float = 1
+        var limited = channels
+
+        for index in 0..<first.count {
+            let framePeak = channels.reduce(Float.zero) { partial, channel in
+                guard index < channel.count else { return partial }
+                return max(partial, abs(channel[index]))
+            }
+
+            let desiredGain = framePeak > peakLimit ? peakLimit / max(framePeak, 1e-6) : 1
+            if desiredGain < gain {
+                gain = desiredGain
+            } else {
+                gain = gain * releaseCoeff + (1 - releaseCoeff)
+            }
+
+            for channelIndex in limited.indices where index < limited[channelIndex].count {
+                limited[channelIndex][index] = limited[channelIndex][index] * gain
+            }
+        }
+
+        return limited
     }
 
     private func integratedLoudness(_ signal: AudioSignal) -> Float {

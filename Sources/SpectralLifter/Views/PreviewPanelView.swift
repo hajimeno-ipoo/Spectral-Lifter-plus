@@ -143,16 +143,16 @@ struct PreviewPanelView: View {
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                             .frame(width: 34, alignment: .leading)
-                        GeometryReader { proxy in
-                            ZStack(alignment: .leading) {
-                                Capsule()
-                                    .fill(Color.secondary.opacity(0.12))
-                                Capsule()
-                                    .fill(tint.opacity(isActive ? 0.95 : 0.45))
-                                    .frame(width: proxy.size.width * band.level)
-                            }
+                    GeometryReader { proxy in
+                        ZStack(alignment: .leading) {
+                            Capsule()
+                                .fill(Color.secondary.opacity(0.12))
+                            Capsule()
+                                .fill(tint.opacity(isActive ? 0.95 : 0.45))
+                                .frame(width: proxy.size.width * band.level)
                         }
-                        .frame(height: 6)
+                    }
+                    .frame(height: 6)
                     }
                     .frame(height: 10)
                 }

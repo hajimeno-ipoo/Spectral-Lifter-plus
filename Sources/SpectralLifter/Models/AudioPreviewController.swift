@@ -34,7 +34,7 @@ final class AudioPreviewController: NSObject, AVAudioPlayerDelegate {
     private var playbackStates: [AudioPreviewTarget: AudioPlaybackState] = [:]
     private var integratedLoudnessByTarget: [AudioPreviewTarget: Float] = [:]
     private let meterInterval: TimeInterval = 0.05
-    private let smoothingFactor = 0.20
+    private let smoothingFactor = 0.25
 
     func startPlayback(for url: URL?, target: AudioPreviewTarget) {
         guard let url else { return }
@@ -247,10 +247,10 @@ final class AudioPreviewController: NSObject, AVAudioPlayerDelegate {
 
     func snapshot(for target: AudioPreviewTarget) -> AudioPreviewSnapshot {
         previewSnapshots[target] ?? AudioPreviewSnapshot(
-            waveform: Array(repeating: 0, count: 96),
+            waveform: Array(repeating: 0, count: AudioFileService.previewBucketCount),
             duration: 0,
-            bandLevels: Dictionary(uniqueKeysWithValues: AudioBandCatalog.previewBands.map { ($0.id, Array(repeating: 0, count: 96)) }),
-            bandLevelDBs: Dictionary(uniqueKeysWithValues: AudioBandCatalog.previewBands.map { ($0.id, Array(repeating: Float(-120), count: 96)) })
+            bandLevels: Dictionary(uniqueKeysWithValues: AudioBandCatalog.previewBands.map { ($0.id, Array(repeating: 0, count: AudioFileService.previewBucketCount)) }),
+            bandLevelDBs: Dictionary(uniqueKeysWithValues: AudioBandCatalog.previewBands.map { ($0.id, Array(repeating: Float(-120), count: AudioFileService.previewBucketCount)) })
         )
     }
 

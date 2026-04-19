@@ -1,13 +1,22 @@
 import Foundation
 
 struct AudioProcessingService {
-    func process(inputFile: URL, logHandler: @escaping @Sendable (String) -> Void) async throws -> URL {
+    func process(
+        inputFile: URL,
+        denoiseStrength: DenoiseStrength = .balanced,
+        logHandler: @escaping @Sendable (String) -> Void
+    ) async throws -> URL {
         let outputURL = Self.temporaryOutputURL(for: inputFile)
         let outputPath = outputURL.path(percentEncoded: false)
 
         let logger = ClosureLogger(logHandler: logHandler)
         try await Task.detached(priority: .userInitiated) {
-            try NativeAudioProcessor().process(inputFile: inputFile, outputFile: outputURL, logger: logger)
+            try NativeAudioProcessor().process(
+                inputFile: inputFile,
+                outputFile: outputURL,
+                denoiseStrength: denoiseStrength,
+                logger: logger
+            )
         }.value
 
         guard FileManager.default.fileExists(atPath: outputPath) else {

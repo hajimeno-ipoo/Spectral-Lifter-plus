@@ -36,12 +36,16 @@ enum MasteringProfile: String, CaseIterable, Identifiable, Sendable {
                 targetLoudness: -15.5,
                 peakCeilingDB: -1.2,
                 lowShelfGain: 0.8,
-                highShelfGain: 0.6,
+                lowMidGain: 0.18,
+                presenceGain: 0.18,
+                highShelfGain: 0.52,
                 multibandCompression: MultibandCompressionSettings(
                     low: BandCompressorSettings(thresholdDB: -23, ratio: 1.7, attackMs: 30, releaseMs: 180, makeupGainDB: 0.4),
                     mid: BandCompressorSettings(thresholdDB: -22, ratio: 1.5, attackMs: 18, releaseMs: 140, makeupGainDB: 0.2),
                     high: BandCompressorSettings(thresholdDB: -24, ratio: 1.8, attackMs: 8, releaseMs: 110, makeupGainDB: 0.1)
                 ),
+                deEsserAmount: 0.22,
+                deEsserThresholdDB: -26,
                 stereoWidth: 1.04,
                 saturationAmount: 0.10
             )
@@ -49,13 +53,17 @@ enum MasteringProfile: String, CaseIterable, Identifiable, Sendable {
             return MasteringSettings(
                 targetLoudness: -14.0,
                 peakCeilingDB: -1.0,
-                lowShelfGain: 1.2,
-                highShelfGain: 0.8,
+                lowShelfGain: 1.12,
+                lowMidGain: 0.26,
+                presenceGain: 0.26,
+                highShelfGain: 0.72,
                 multibandCompression: MultibandCompressionSettings(
                     low: BandCompressorSettings(thresholdDB: -25, ratio: 2.2, attackMs: 26, releaseMs: 170, makeupGainDB: 0.7),
                     mid: BandCompressorSettings(thresholdDB: -23, ratio: 1.9, attackMs: 14, releaseMs: 130, makeupGainDB: 0.4),
                     high: BandCompressorSettings(thresholdDB: -25, ratio: 2.1, attackMs: 6, releaseMs: 90, makeupGainDB: 0.2)
                 ),
+                deEsserAmount: 0.34,
+                deEsserThresholdDB: -27,
                 stereoWidth: 1.08,
                 saturationAmount: 0.16
             )
@@ -63,13 +71,17 @@ enum MasteringProfile: String, CaseIterable, Identifiable, Sendable {
             return MasteringSettings(
                 targetLoudness: -12.8,
                 peakCeilingDB: -0.9,
-                lowShelfGain: 1.6,
-                highShelfGain: 1.1,
+                lowShelfGain: 1.45,
+                lowMidGain: 0.34,
+                presenceGain: 0.34,
+                highShelfGain: 0.94,
                 multibandCompression: MultibandCompressionSettings(
                     low: BandCompressorSettings(thresholdDB: -27, ratio: 2.6, attackMs: 22, releaseMs: 160, makeupGainDB: 1.0),
                     mid: BandCompressorSettings(thresholdDB: -24, ratio: 2.2, attackMs: 10, releaseMs: 110, makeupGainDB: 0.7),
                     high: BandCompressorSettings(thresholdDB: -26, ratio: 2.4, attackMs: 4, releaseMs: 80, makeupGainDB: 0.4)
                 ),
+                deEsserAmount: 0.40,
+                deEsserThresholdDB: -28,
                 stereoWidth: 1.12,
                 saturationAmount: 0.22
             )
@@ -81,8 +93,12 @@ struct MasteringSettings: Sendable, Equatable {
     var targetLoudness: Float
     var peakCeilingDB: Float
     var lowShelfGain: Float
+    var lowMidGain: Float
+    var presenceGain: Float
     var highShelfGain: Float
     var multibandCompression: MultibandCompressionSettings
+    var deEsserAmount: Float
+    var deEsserThresholdDB: Float
     var stereoWidth: Float
     var saturationAmount: Float
 }
@@ -186,6 +202,7 @@ enum AudioComparisonSide: String, CaseIterable, Identifiable {
 enum MasteringStep: String, CaseIterable, Hashable {
     case analyze = "補正済み音源を解析します"
     case tone = "トーンを整えます"
+    case deEss = "刺さりを整えます"
     case dynamics = "帯域のバランスを整えます"
     case saturate = "音の密度を整えます"
     case stereo = "広がりを整えます"
@@ -198,6 +215,8 @@ enum MasteringStep: String, CaseIterable, Hashable {
             return "解析"
         case .tone:
             return "トーン"
+        case .deEss:
+            return "刺さり抑制"
         case .dynamics:
             return "帯域制御"
         case .saturate:

@@ -18,6 +18,7 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 18) {
                 header
                 inputSection
+                correctionSection
                 outputSection
                 masteringSection
                 PreviewPanelView(
@@ -79,6 +80,35 @@ struct ContentView: View {
 
             outputPathRow(title: "補正後プレビュー", fileURL: job.outputFile, placeholder: "補正を実行すると一時ファイルが作られます")
             outputPathRow(title: "最終版プレビュー", fileURL: job.masteredOutputFile, placeholder: "マスタリングを実行すると一時ファイルが作られます")
+        }
+    }
+
+    private var correctionSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("補正")
+                .font(.headline)
+
+            HStack(alignment: .top, spacing: 16) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("ノイズ除去の強さ")
+                        .font(.subheadline.weight(.semibold))
+                    Picker("ノイズ除去の強さ", selection: $job.selectedDenoiseStrength) {
+                        ForEach(DenoiseStrength.allCases) { strength in
+                            Text(strength.title).tag(strength)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .disabled(job.isProcessing)
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("説明")
+                        .font(.subheadline.weight(.semibold))
+                    Text(job.selectedDenoiseStrength.summary)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
     }
 
@@ -176,7 +206,7 @@ struct ContentView: View {
                     )
                 }
 
-                sliderCard(title: "低域の厚み", valueText: String(format: "%.2f", job.editableMasteringSettings.lowShelfGain)) {
+                sliderCard(title: "低音", valueText: String(format: "%.2f", job.editableMasteringSettings.lowShelfGain)) {
                     Slider(
                         value: binding(
                             get: { Double(job.editableMasteringSettings.lowShelfGain) },
@@ -186,12 +216,42 @@ struct ContentView: View {
                                 }
                             }
                         ),
-                        in: 0 ... 3,
+                        in: 0 ... 2.5,
                         step: 0.05
                     )
                 }
 
-                sliderCard(title: "高域の明るさ", valueText: String(format: "%.2f", job.editableMasteringSettings.highShelfGain)) {
+                sliderCard(title: "こもりカット", valueText: String(format: "%.2f", job.editableMasteringSettings.lowMidGain)) {
+                    Slider(
+                        value: binding(
+                            get: { Double(job.editableMasteringSettings.lowMidGain) },
+                            set: { newValue in
+                                job.updateMasteringSettings { settings in
+                                    settings.lowMidGain = Float(newValue)
+                                }
+                            }
+                        ),
+                        in: 0 ... 1.2,
+                        step: 0.05
+                    )
+                }
+
+                sliderCard(title: "存在感", valueText: String(format: "%.2f", job.editableMasteringSettings.presenceGain)) {
+                    Slider(
+                        value: binding(
+                            get: { Double(job.editableMasteringSettings.presenceGain) },
+                            set: { newValue in
+                                job.updateMasteringSettings { settings in
+                                    settings.presenceGain = Float(newValue)
+                                }
+                            }
+                        ),
+                        in: 0 ... 1.2,
+                        step: 0.05
+                    )
+                }
+
+                sliderCard(title: "空気感", valueText: String(format: "%.2f", job.editableMasteringSettings.highShelfGain)) {
                     Slider(
                         value: binding(
                             get: { Double(job.editableMasteringSettings.highShelfGain) },
@@ -201,8 +261,23 @@ struct ContentView: View {
                                 }
                             }
                         ),
-                        in: 0 ... 3,
+                        in: 0 ... 2.5,
                         step: 0.05
+                    )
+                }
+
+                sliderCard(title: "刺さり抑制", valueText: String(format: "%.0f%%", Double(job.editableMasteringSettings.deEsserAmount) * 100)) {
+                    Slider(
+                        value: binding(
+                            get: { Double(job.editableMasteringSettings.deEsserAmount) },
+                            set: { newValue in
+                                job.updateMasteringSettings { settings in
+                                    settings.deEsserAmount = Float(newValue)
+                                }
+                            }
+                        ),
+                        in: 0 ... 1,
+                        step: 0.01
                     )
                 }
 
@@ -530,7 +605,7 @@ struct ContentView: View {
                 previewDisabled: !job.hasExistingOutput || job.isProcessing,
                 statusText: job.statusMessage,
                 statusColor: correctionStatusColor,
-                captionText: job.isAnalyzingMetrics ? "比較を更新中" : "試聴状態は上の試聴比較に表示します"
+                captionText: job.isAnalyzingMetrics ? "比較を更新中" : "ノイズ除去は「\(job.selectedDenoiseStrength.title)」です"
             )
         }
     }
@@ -1033,7 +1108,10 @@ struct ContentView: View {
             job.beginProcessing()
 
             do {
-                let outputFile = try await AudioProcessingService().process(inputFile: inputFile) { message in
+                let outputFile = try await AudioProcessingService().process(
+                    inputFile: inputFile,
+                    denoiseStrength: job.selectedDenoiseStrength
+                ) { message in
                     Task { @MainActor in
                         job.appendLog(message)
                     }

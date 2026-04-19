@@ -55,6 +55,7 @@ final class ProcessingJob {
     var editableMasteringSettings: MasteringSettings = MasteringProfile.streaming.settings
     var isUsingCustomMasteringSettings = false
     var showAdvancedMasteringSettings = false
+    var selectedDenoiseStrength: DenoiseStrength = .balanced
 
     var statusColor: Color {
         if isProcessing {

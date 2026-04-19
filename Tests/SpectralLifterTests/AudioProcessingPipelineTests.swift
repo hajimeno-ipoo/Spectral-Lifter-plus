@@ -12,7 +12,10 @@ struct AudioProcessingPipelineTests {
 
         try makeTestTone(at: inputURL)
 
-        let output = try await AudioProcessingService().process(inputFile: inputURL) { _ in }
+        let output = try await AudioProcessingService().process(
+            inputFile: inputURL,
+            denoiseStrength: .strong
+        ) { _ in }
 
         #expect(FileManager.default.fileExists(atPath: output.path()))
         #expect(output.lastPathComponent.contains("input_lifter"))
@@ -33,7 +36,10 @@ struct AudioProcessingPipelineTests {
 
         try makeTestTone(at: inputURL, duration: 6)
 
-        let output = try await AudioProcessingService().process(inputFile: inputURL) { _ in }
+        let output = try await AudioProcessingService().process(
+            inputFile: inputURL,
+            denoiseStrength: .gentle
+        ) { _ in }
 
         #expect(output.lastPathComponent.contains("_lifter_"))
         #expect(FileManager.default.fileExists(atPath: output.path(percentEncoded: false)))

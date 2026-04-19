@@ -4,6 +4,7 @@ import Foundation
 
 enum AudioFileService {
     static let targetSampleRate = 48_000.0
+    static let previewBucketCount = 384
     private static let previewFFTSize = 1024
     private static let previewHopSize = 1024
     private static let spectrogramTimeBuckets = 72
@@ -59,7 +60,7 @@ enum AudioFileService {
         return AudioSignal(channels: channels, sampleRate: targetRate)
     }
 
-    static func makePreviewSnapshot(for url: URL, bucketCount: Int = 96) throws -> AudioPreviewSnapshot {
+    static func makePreviewSnapshot(for url: URL, bucketCount: Int = previewBucketCount) throws -> AudioPreviewSnapshot {
         let signal = try loadAudio(from: url)
         let mono = signal.monoMixdown()
         guard !mono.isEmpty else {
@@ -232,17 +233,23 @@ enum AudioFileService {
         let framesPerBucket = max(Double(spectrogram.frameCount) / Double(bucketCount), 1)
 
         for (bandID, levels) in frameBandLevels {
-            let peakLevel = levels.max() ?? -120
-            let floorLevel = max(-84, peakLevel - 42)
+            let sortedLevels = levels.sorted()
+            let lowerReference = percentile(sortedLevels, fraction: 0.15)
+            let upperReference = percentile(sortedLevels, fraction: 0.95)
+            let spanFloor = upperReference - 24
+            let floorLevel = min(lowerReference, spanFloor)
+            let ceilingLevel = max(upperReference, floorLevel + 6)
             for bucketIndex in 0..<bucketCount {
                 let start = Int(floor(Double(bucketIndex) * framesPerBucket))
                 let end = min(levels.count, Int(ceil(Double(bucketIndex + 1) * framesPerBucket)))
                 guard start < end else { continue }
                 let bucketSlice = levels[start..<end]
-                let bucketPeak = bucketSlice.max() ?? floorLevel
-                let normalized = max(0, min(1, (bucketPeak - floorLevel) / max(peakLevel - floorLevel, 1)))
-                bucketLevels[bandID]?[bucketIndex] = powf(normalized, 0.72)
-                bucketLevelDBs[bandID]?[bucketIndex] = bucketPeak
+                let bucketMean = bucketSlice.reduce(0, +) / Float(bucketSlice.count)
+                let bucketPeak = bucketSlice.max() ?? bucketMean
+                let blendedLevel = bucketMean + (bucketPeak - bucketMean) * 0.45
+                let normalized = max(0, min(1, (blendedLevel - floorLevel) / max(ceilingLevel - floorLevel, 1)))
+                bucketLevels[bandID]?[bucketIndex] = powf(normalized, 0.58)
+                bucketLevelDBs[bandID]?[bucketIndex] = blendedLevel
             }
         }
 
@@ -253,6 +260,13 @@ enum AudioFileService {
         Dictionary(uniqueKeysWithValues: AudioBandCatalog.previewBands.map { band in
             (band.id, Array(repeating: fill, count: bucketCount))
         })
+    }
+
+    private static func percentile(_ sortedValues: [Float], fraction: Float) -> Float {
+        guard !sortedValues.isEmpty else { return -120 }
+        let clampedFraction = max(0, min(1, fraction))
+        let position = Int(round(clampedFraction * Float(sortedValues.count - 1)))
+        return sortedValues[min(max(position, 0), sortedValues.count - 1)]
     }
 
     static func interleavedFileSettings(sampleRate: Double, channels: Int) -> [String: Any] {

@@ -10,6 +10,17 @@ struct AudioBandDescriptor: Sendable, Identifiable {
 
 enum AudioBandCatalog {
     static let previewBands: [AudioBandDescriptor] = [
+        AudioBandDescriptor(id: "sub", label: "超低", rangeDescription: "0-160Hz", lowerBound: 0, upperBound: 160),
+        AudioBandDescriptor(id: "low", label: "低域", rangeDescription: "160-400Hz", lowerBound: 160, upperBound: 400),
+        AudioBandDescriptor(id: "lowMid", label: "中低", rangeDescription: "400-1.2kHz", lowerBound: 400, upperBound: 1_200),
+        AudioBandDescriptor(id: "mid", label: "中域", rangeDescription: "1.2-3kHz", lowerBound: 1_200, upperBound: 3_000),
+        AudioBandDescriptor(id: "upperMid", label: "中高", rangeDescription: "3-6kHz", lowerBound: 3_000, upperBound: 6_000),
+        AudioBandDescriptor(id: "presence", label: "明瞭", rangeDescription: "6-10kHz", lowerBound: 6_000, upperBound: 10_000),
+        AudioBandDescriptor(id: "high", label: "高域", rangeDescription: "10-16kHz", lowerBound: 10_000, upperBound: 16_000),
+        AudioBandDescriptor(id: "air", label: "超高", rangeDescription: "16-24kHz", lowerBound: 16_000, upperBound: 24_000)
+    ]
+
+    static let comparisonBands: [AudioBandDescriptor] = [
         AudioBandDescriptor(id: "low", label: "低域", rangeDescription: "0-5kHz", lowerBound: 0, upperBound: 5_000),
         AudioBandDescriptor(id: "presence", label: "中高域", rangeDescription: "5-10kHz", lowerBound: 5_000, upperBound: 10_000),
         AudioBandDescriptor(id: "high", label: "高域", rangeDescription: "10-16kHz", lowerBound: 10_000, upperBound: 16_000),
@@ -52,6 +63,36 @@ struct AnalysisData: Sendable {
     let shimmerRatio: Float
     let brightnessRatio: Float
     let transientAmount: Float
+}
+
+enum DenoiseStrength: String, CaseIterable, Identifiable, Sendable {
+    case gentle
+    case balanced
+    case strong
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .gentle:
+            return "弱い"
+        case .balanced:
+            return "標準"
+        case .strong:
+            return "強い"
+        }
+    }
+
+    var summary: String {
+        switch self {
+        case .gentle:
+            return "音の芯を優先して、軽くノイズを減らします"
+        case .balanced:
+            return "音の自然さとノイズ低減のバランスを取ります"
+        case .strong:
+            return "ノイズをしっかり減らしますが、効き方も強めです"
+        }
+    }
 }
 
 struct AudioMetricSnapshot: Sendable {
