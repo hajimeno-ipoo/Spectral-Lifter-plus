@@ -16,9 +16,14 @@ struct AudioComparisonServiceTests {
 
         #expect(metrics.peakDBFS.isFinite)
         #expect(metrics.rmsDBFS.isFinite)
+        #expect(metrics.integratedLoudnessLUFS.isFinite)
+        #expect(metrics.truePeakDBFS.isFinite)
+        #expect(metrics.stereoWidth >= 0)
+        #expect(metrics.harshnessScore >= 0)
         #expect(metrics.centroidHz > 0)
         #expect(metrics.hf12Ratio >= 0)
         #expect(metrics.bandEnergies.count == 4)
+        #expect(metrics.masteringBandEnergies.count == 4)
     }
 
     private func makeTestTone(at url: URL) throws {

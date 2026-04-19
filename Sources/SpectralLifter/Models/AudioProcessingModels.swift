@@ -26,6 +26,13 @@ enum AudioBandCatalog {
         AudioBandDescriptor(id: "high", label: "高域", rangeDescription: "10-16kHz", lowerBound: 10_000, upperBound: 16_000),
         AudioBandDescriptor(id: "air", label: "超高域", rangeDescription: "16-24kHz", lowerBound: 16_000, upperBound: 24_000)
     ]
+
+    static let masteringBands: [AudioBandDescriptor] = [
+        AudioBandDescriptor(id: "low", label: "低音", rangeDescription: "20-180Hz", lowerBound: 20, upperBound: 180),
+        AudioBandDescriptor(id: "lowMid", label: "こもりカット", rangeDescription: "180-500Hz", lowerBound: 180, upperBound: 500),
+        AudioBandDescriptor(id: "presence", label: "存在感", rangeDescription: "2.5-5.5kHz", lowerBound: 2_500, upperBound: 5_500),
+        AudioBandDescriptor(id: "air", label: "空気感", rangeDescription: "10-20kHz", lowerBound: 10_000, upperBound: 20_000)
+    ]
 }
 
 struct AudioSignal {
@@ -98,11 +105,16 @@ enum DenoiseStrength: String, CaseIterable, Identifiable, Sendable {
 struct AudioMetricSnapshot: Sendable {
     let peakDBFS: Double
     let rmsDBFS: Double
+    let integratedLoudnessLUFS: Double
+    let truePeakDBFS: Double
+    let stereoWidth: Double
+    let harshnessScore: Double
     let centroidHz: Double
     let hf12Ratio: Double
     let hf16Ratio: Double
     let hf18Ratio: Double
     let bandEnergies: [BandEnergyMetric]
+    let masteringBandEnergies: [BandEnergyMetric]
 }
 
 struct BandEnergyMetric: Sendable, Identifiable {

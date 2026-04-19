@@ -30,6 +30,7 @@ struct ContentView: View {
                 correctionActionSection
                 masteringActionSection
                 progressSection
+                masteringDifferenceSection
                 spectrogramSection
                 metricsSection
                 logSection
@@ -790,6 +791,299 @@ struct ContentView: View {
         }
     }
 
+    private var masteringDifferenceSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text("マスタリング差分")
+                    .font(.headline)
+                Spacer()
+                Text("補正後 -> 最終版")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if let corrected = job.outputMetrics, let mastered = job.masteredMetrics {
+                HStack(alignment: .top, spacing: 14) {
+                    masteringRadarCard(corrected: corrected, mastered: mastered)
+                    masteringBalanceCurveCard(corrected: corrected, mastered: mastered)
+                }
+
+                Text("左で仕上がりの方向、右で帯域の触り方を見比べられます。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("最終版の比較は、マスタリングを実行すると表示されます。")
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func masteringRadarCard(corrected: AudioMetricSnapshot, mastered: AudioMetricSnapshot) -> some View {
+        let axes = masteringRadarAxes(corrected: corrected, mastered: mastered)
+
+        return VStack(alignment: .leading, spacing: 10) {
+            Text("仕上がりの方向")
+                .font(.headline)
+
+            GeometryReader { proxy in
+                let size = min(proxy.size.width, proxy.size.height)
+                let center = CGPoint(x: proxy.size.width * 0.5, y: proxy.size.height * 0.5)
+                let radius = size * 0.30
+                let ringColor = Color.secondary.opacity(0.14)
+
+                ZStack {
+                    ForEach(1...4, id: \.self) { step in
+                        radarPolygonPath(
+                            values: Array(repeating: Double(step) / 4.0, count: axes.count),
+                            center: center,
+                            radius: radius
+                        )
+                        .stroke(ringColor, lineWidth: 1)
+                    }
+
+                    ForEach(Array(axes.enumerated()), id: \.offset) { index, axis in
+                        Path { path in
+                            path.move(to: center)
+                            path.addLine(to: radarPoint(value: 1, index: index, total: axes.count, center: center, radius: radius))
+                        }
+                        .stroke(ringColor, lineWidth: 1)
+
+                        Text(axis.label)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .position(
+                                radarPoint(value: 1.18, index: index, total: axes.count, center: center, radius: radius)
+                            )
+                    }
+
+                    radarPolygonPath(
+                        values: axes.map(\.corrected),
+                        center: center,
+                        radius: radius
+                    )
+                    .fill(Color.green.opacity(0.14))
+
+                    radarPolygonPath(
+                        values: axes.map(\.corrected),
+                        center: center,
+                        radius: radius
+                    )
+                    .stroke(Color.green, lineWidth: 2)
+
+                    radarPolygonPath(
+                        values: axes.map(\.mastered),
+                        center: center,
+                        radius: radius
+                    )
+                    .fill(Color.orange.opacity(0.14))
+
+                    radarPolygonPath(
+                        values: axes.map(\.mastered),
+                        center: center,
+                        radius: radius
+                    )
+                    .stroke(Color.orange, lineWidth: 2)
+                }
+            }
+            .frame(height: 280)
+
+            chartLegend
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, minHeight: 360, alignment: .topLeading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    private func masteringBalanceCurveCard(corrected: AudioMetricSnapshot, mastered: AudioMetricSnapshot) -> some View {
+        let points = masteringCurvePoints(corrected: corrected, mastered: mastered)
+        let values = points.map(\.value)
+        let minValue = floor((values.min() ?? -36) / 2) * 2 - 2
+        let maxValue = ceil((values.max() ?? -12) / 2) * 2 + 2
+
+        return VStack(alignment: .leading, spacing: 8) {
+            Text("周波数バランス")
+                .font(.headline)
+
+            Chart(points) { point in
+                LineMark(
+                    x: .value("帯域", point.label),
+                    y: .value("レベル", point.value)
+                )
+                .foregroundStyle(by: .value("系列", point.series))
+                .interpolationMethod(.catmullRom)
+                .lineStyle(.init(lineWidth: 3))
+
+                PointMark(
+                    x: .value("帯域", point.label),
+                    y: .value("レベル", point.value)
+                )
+                .foregroundStyle(by: .value("系列", point.series))
+                .symbolSize(48)
+            }
+            .chartLegend(.hidden)
+            .chartForegroundStyleScale([
+                "補正後": Color.green,
+                "最終版": Color.orange
+            ])
+            .chartYScale(domain: minValue ... maxValue)
+            .chartXAxis {
+                AxisMarks(values: AudioBandCatalog.masteringBands.map(\.label)) { value in
+                    AxisGridLine()
+                    AxisTick()
+                    AxisValueLabel()
+                }
+            }
+            .chartYAxis {
+                AxisMarks(position: .leading) { value in
+                    AxisGridLine()
+                    AxisTick()
+                    AxisValueLabel {
+                        if let number = value.as(Double.self) {
+                            Text(String(format: "%.0f dB", number))
+                        }
+                    }
+                }
+            }
+            .frame(height: 280)
+
+            chartLegend
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, minHeight: 360, alignment: .topLeading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    private var chartLegend: some View {
+        HStack(spacing: 14) {
+            legendChip(color: .green, label: "補正後")
+            legendChip(color: .orange, label: "最終版")
+        }
+    }
+
+    private func legendChip(color: Color, label: String) -> some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(color)
+                .frame(width: 8, height: 8)
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func masteringRadarAxes(corrected: AudioMetricSnapshot, mastered: AudioMetricSnapshot) -> [RadarAxisDatum] {
+        let targetLoudness = Double(job.editableMasteringSettings.targetLoudness)
+        let targetPeak = Double(job.editableMasteringSettings.peakCeilingDB)
+
+        return [
+            RadarAxisDatum(
+                label: "音量感",
+                corrected: loudnessRadarScore(corrected.integratedLoudnessLUFS, target: targetLoudness),
+                mastered: loudnessRadarScore(mastered.integratedLoudnessLUFS, target: targetLoudness)
+            ),
+            RadarAxisDatum(
+                label: "安全性",
+                corrected: safetyRadarScore(corrected.truePeakDBFS, target: targetPeak),
+                mastered: safetyRadarScore(mastered.truePeakDBFS, target: targetPeak)
+            ),
+            RadarAxisDatum(
+                label: "聞きやすさ",
+                corrected: listenabilityRadarScore(corrected),
+                mastered: listenabilityRadarScore(mastered)
+            ),
+            RadarAxisDatum(
+                label: "広がり",
+                corrected: widthRadarScore(corrected.stereoWidth),
+                mastered: widthRadarScore(mastered.stereoWidth)
+            ),
+            RadarAxisDatum(
+                label: "明るさ",
+                corrected: brightnessRadarScore(corrected),
+                mastered: brightnessRadarScore(mastered)
+            )
+        ]
+    }
+
+    private func masteringCurvePoints(corrected: AudioMetricSnapshot, mastered: AudioMetricSnapshot) -> [MasteringCurvePoint] {
+        let correctedMap = Dictionary(uniqueKeysWithValues: corrected.masteringBandEnergies.map { ($0.id, $0.levelDB) })
+        let masteredMap = Dictionary(uniqueKeysWithValues: mastered.masteringBandEnergies.map { ($0.id, $0.levelDB) })
+
+        return AudioBandCatalog.masteringBands.enumerated().flatMap { index, band in
+            [
+                MasteringCurvePoint(order: index, label: band.label, series: "補正後", value: correctedMap[band.id] ?? -120),
+                MasteringCurvePoint(order: index, label: band.label, series: "最終版", value: masteredMap[band.id] ?? -120)
+            ]
+        }
+    }
+
+    private func loudnessRadarScore(_ value: Double, target: Double) -> Double {
+        max(0.12, 1 - abs(value - target) / 6.0)
+    }
+
+    private func safetyRadarScore(_ truePeak: Double, target: Double) -> Double {
+        if truePeak <= target {
+            return min(1, 0.78 + (target - truePeak) * 0.12)
+        }
+        return max(0.10, 0.78 - (truePeak - target) * 0.6)
+    }
+
+    private func listenabilityRadarScore(_ metrics: AudioMetricSnapshot) -> Double {
+        let lowMid = metrics.masteringBandEnergies.first { $0.id == "lowMid" }?.levelDB ?? -24
+        let lowMidScore = max(0, min(1, 1 - (lowMid + 18) / 18))
+        let harshnessScore = max(0, min(1, 1 - metrics.harshnessScore))
+        return max(0.08, min(1, harshnessScore * 0.75 + lowMidScore * 0.25))
+    }
+
+    private func widthRadarScore(_ value: Double) -> Double {
+        max(0.10, min(1, value / 1.20))
+    }
+
+    private func brightnessRadarScore(_ metrics: AudioMetricSnapshot) -> Double {
+        let presence = metrics.masteringBandEnergies.first { $0.id == "presence" }?.levelDB ?? -24
+        let air = metrics.masteringBandEnergies.first { $0.id == "air" }?.levelDB ?? -24
+        let average = (presence + air) * 0.5
+        return max(0.08, min(1, (average + 42) / 30))
+    }
+
+    private func radarPolygonPath(values: [Double], center: CGPoint, radius: CGFloat) -> Path {
+        var path = Path()
+        guard !values.isEmpty else { return path }
+
+        for index in values.indices {
+            let point = radarPoint(value: values[index], index: index, total: values.count, center: center, radius: radius)
+            if index == 0 {
+                path.move(to: point)
+            } else {
+                path.addLine(to: point)
+            }
+        }
+        path.closeSubpath()
+        return path
+    }
+
+    private func radarPoint(value: Double, index: Int, total: Int, center: CGPoint, radius: CGFloat) -> CGPoint {
+        let angle = Angle.degrees(-90 + (360.0 / Double(total)) * Double(index)).radians
+        let scaledRadius = radius * CGFloat(max(0, min(1, value)))
+        return CGPoint(
+            x: center.x + cos(angle) * scaledRadius,
+            y: center.y + sin(angle) * scaledRadius
+        )
+    }
+
+    private struct RadarAxisDatum {
+        let label: String
+        let corrected: Double
+        let mastered: Double
+    }
+
+    private struct MasteringCurvePoint: Identifiable {
+        let id = UUID()
+        let order: Int
+        let label: String
+        let series: String
+        let value: Double
+    }
+
     private var spectrogramSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("スペクトログラム")
@@ -1209,8 +1503,10 @@ struct ContentView: View {
 
     private enum MetricFormat {
         case dBFS
+        case lufs
         case hertz
         case ratio(Int)
+        case score(Int)
     }
 
     private func analyzeMetrics(for url: URL, target: MetricTarget) {
@@ -1355,9 +1651,13 @@ struct ContentView: View {
         switch format {
         case .dBFS:
             return String(format: "%.2f dB", value)
+        case .lufs:
+            return String(format: "%.1f LUFS", value)
         case .hertz:
             return String(format: "%.0f Hz", value)
         case .ratio(let decimals):
+            return String(format: "%.\(decimals)f", value)
+        case .score(let decimals):
             return String(format: "%.\(decimals)f", value)
         }
     }
@@ -1366,11 +1666,29 @@ struct ContentView: View {
         switch format {
         case .dBFS:
             return String(format: value >= 0 ? "+%.2f dB" : "%.2f dB", value)
+        case .lufs:
+            return String(format: value >= 0 ? "+%.1f LUFS" : "%.1f LUFS", value)
         case .hertz:
             return String(format: value >= 0 ? "+%.0f Hz" : "%.0f Hz", value)
         case .ratio(let decimals):
             return String(format: value >= 0 ? "+%.\(decimals)f" : "%.\(decimals)f", value)
+        case .score(let decimals):
+            return String(format: value >= 0 ? "+%.\(decimals)f" : "%.\(decimals)f", value)
         }
+    }
+
+    private func summaryDirectionColor(delta: Double) -> Color {
+        if abs(delta) < 0.0001 {
+            return .secondary
+        }
+        return delta >= 0 ? .green : .red
+    }
+
+    private func summaryImprovementColor(beforeDistance: Double, afterDistance: Double) -> Color {
+        if abs(afterDistance - beforeDistance) < 0.0001 {
+            return .secondary
+        }
+        return afterDistance < beforeDistance ? .green : .orange
     }
 }
 
