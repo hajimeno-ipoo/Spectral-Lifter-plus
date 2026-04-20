@@ -38,7 +38,7 @@ Macアプリ(SwiftUI)
 
 ## コードベースの構造
 - `Sources/VelouraLucent/App/`
-  - アプリの起動です。
+  - アプリの起動です。Dock アイコンの上書きもここで行います。
 - `Sources/VelouraLucent/Views/`
   - 画面です。差分サマリー、スペクトログラム、比較表示もここです。
 - `Sources/VelouraLucent/Models/`
@@ -49,8 +49,12 @@ Macアプリ(SwiftUI)
   - FFT まわりなどの共通処理です。
 - `Tests/VelouraLucentTests/`
   - 動作確認用のテストです。
+- `Resources/`
+  - アプリアイコンの元画像です。`AppIcon-1024.png` を置きます。
+- `Sources/VelouraLucent/Resources/`
+  - Xcode から直接起動した時にも使える、実行時用の画像リソースです。
 - `script/build_and_run.sh`
-  - ビルドしてアプリを起動するスクリプトです。
+  - ビルドしてアプリを起動するスクリプトです。アイコン画像から macOS 用の Asset Catalog を組み立てて、`Assets.car` とアイコン情報を作ります。
 
 ## その技術を選んだ理由
 - `SwiftUI`
@@ -92,6 +96,8 @@ Macアプリ(SwiftUI)
 
 ## ベストプラクティス
 - まずは `./script/build_and_run.sh` で起動します。
+- アイコンを変える時は `Resources/AppIcon-1024.png` を差し替えます。
+- Xcode から直接起動した時の Dock アイコンも、起動時に同じ画像へ上書きします。
 - `swift build` と `swift test` を通してから変更を重ねます。
 - 音声処理は「補正後」と「最終版」を分けて聞いて確認します。
 - `ノイズ除去` は `標準` を基準にして、必要な時だけ変えます。

@@ -1,10 +1,29 @@
 import AppKit
+import Foundation
 import SwiftUI
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    @MainActor
     func applicationDidFinishLaunching(_ notification: Notification) {
+        applyDockIcon()
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @MainActor
+    private func applyDockIcon() {
+        let bundles = [Bundle.main, Bundle.module]
+
+        for bundle in bundles {
+            guard let url = bundle.url(forResource: "AppIcon-1024", withExtension: "png"),
+                  let image = NSImage(contentsOf: url) else {
+                continue
+            }
+
+            NSApp.applicationIconImage = image
+            NSApp.dockTile.display()
+            return
+        }
     }
 }
 

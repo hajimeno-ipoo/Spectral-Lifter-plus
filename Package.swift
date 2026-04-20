@@ -12,7 +12,10 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "VelouraLucent",
-            path: "Sources/VelouraLucent"
+            path: "Sources/VelouraLucent",
+            resources: [
+                .process("Resources/AppIcon-1024.png")
+            ]
         ),
         .testTarget(
             name: "VelouraLucentTests",
