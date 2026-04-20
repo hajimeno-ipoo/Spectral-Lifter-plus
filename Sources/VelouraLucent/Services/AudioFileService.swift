@@ -1,10 +1,13 @@
 import AVFoundation
 import Accelerate
 import Foundation
+import UniformTypeIdentifiers
 
 enum AudioFileService {
     static let targetSampleRate = 48_000.0
     static let previewBucketCount = 384
+    static let outputFileExtension = "wav"
+    static let outputContentType = UTType.wav
     private static let previewFFTSize = 1024
     private static let previewHopSize = 1024
     private static let spectrogramTimeBuckets = 72

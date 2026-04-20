@@ -46,6 +46,17 @@ struct MasteringPipelineTests {
         #expect(FileManager.default.fileExists(atPath: output.path()))
     }
 
+    @Test
+    func masteredOutputURLsStayWav() {
+        let inputURL = URL(fileURLWithPath: "/tmp/song_lifter.mp3")
+
+        let defaultOutput = MasteringService.defaultOutputURL(for: inputURL)
+        let temporaryOutput = MasteringService.temporaryOutputURL(for: inputURL)
+
+        #expect(defaultOutput.pathExtension == AudioFileService.outputFileExtension)
+        #expect(temporaryOutput.pathExtension == AudioFileService.outputFileExtension)
+    }
+
     private func makeTestTone(at url: URL) throws {
         let sampleRate = 48_000.0
         let frameCount = Int(sampleRate * 3)

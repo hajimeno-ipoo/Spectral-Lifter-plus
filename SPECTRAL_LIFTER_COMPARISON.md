@@ -5,6 +5,7 @@
 - `Veloura Lucent` は、元プロジェクト `relationsuno/Spectral-Lifter` の処理思想を概ね引き継いでいます。
 - 特に、解析、ノイズ除去、高域補完、帯域抑制、LUFS / True Peak の流れはかなり近いです。
 - 現在は、倍音抽出を少し強化し、高域補完に foldover 系の経路を足し、高域ノイズでは粒子感を意識した抑え方に更新しています。
+- さらに、補完量は軽量の `Neural foldover` 推定器で自動調整します。
 - 違いは、Python + Librosa / PyTorch 実装ではなく、Swift + 自前DSP 実装に置き換えている点です。
 - さらに、現在のアプリには元プロジェクトにない追加マスタリング段があります。
 
@@ -46,6 +47,7 @@ Spectral-Lifter
 
 Veloura Lucent
   AudioAnalyzer
+  -> NeuralFoldoverEstimator
   -> SpectralGateDenoiser
   -> HarmonicUpscaler
   -> MultibandDynamicsProcessor
@@ -68,7 +70,7 @@ Veloura Lucent
 | Spectral Upscaling | `core/upscaling.py` | `HarmonicUpscaler` | より近い形で対応 |
 | 16kHz以上の再構築 | `core/upscaling.py` | `HarmonicUpscaler.process()` | foldover系を追加して対応 |
 | トランジェント補強 | `core/upscaling.py` | `AudioAnalyzer.estimateTransientAmount()` + `HarmonicUpscaler.process()` | 対応 |
-| Neural foldover | `core/upscaling.py` | なし | 元も実質ダミー |
+| Neural foldover | `core/upscaling.py` | `NeuralFoldoverEstimator` | 軽量推定器として追加 |
 | Dynamics Control | `core/dynamics.py` | `MultibandDynamicsProcessor` | ほぼ対応 |
 | 5k-8kHz シビランス抑制 | `core/dynamics.py` | `MultibandDynamicsProcessor.bands` | 対応 |
 | 10k-14kHz シマー抑制 | `core/dynamics.py` | `MultibandDynamicsProcessor.bands` | 対応 |
@@ -113,6 +115,7 @@ Veloura Lucent
 - 倍音寄り成分と打音寄り成分をざっくり分けて、倍音信頼度も作る
 - `10kHz-14kHz` のシマー傾向を見る
 - トランジェント量をざっくり見る
+- ノイズ量もざっくり数値化して、補完量の推定に使う
 
 ### 2. ノイズ除去
 
@@ -136,6 +139,7 @@ Veloura Lucent
 - 欠けた高域を埋める方向の補完
 - トランジェントを少し持ち上げる
 - 倍音信頼度に応じて foldover 系の補完を混ぜる
+- 軽量推定器で `foldoverMix` や高域加算量を自動調整する
 - 元の Python 版と同じく、実体はヒューリスティック寄り
 
 ### 4. 帯域抑制
@@ -210,7 +214,7 @@ Veloura Lucent
 - README では Neural と見えますが、
 - `core/upscaling.py` の実体は、学習済み重みを使った本格推論ではありません。
 - 実際はヒューリスティックな補完が主です。
-- 現在の Swift 側も同じ方針ですが、foldover 系の経路を追加して、元の狙いへ少し寄せています。
+- 現在の Swift 側も同じ方針ですが、foldover 系の経路を追加し、さらに軽量推定器で補完量を自動調整して、元の狙いへ少し寄せています。
 
 そのため、現在の Swift 実装も「元仕様から大きく外れた」のではなく、
 「元の軽量実装をローカルアプリに置き換えた」と考えるほうが近いです。
@@ -238,7 +242,7 @@ Veloura Lucent
 - 特に、帯域設計と処理順は近いです。
 - いちばん大きな違いは、技術スタックと UI です。
 - さらに、現在のアプリは元プロジェクトより後段のマスタリング機能が増えています。
-- 補正段については、最近の更新で倍音分析、高域補完、高域ノイズ抑制が一段だけ元の意図に近づいています。
+- 補正段については、最近の更新で倍音分析、高域補完、高域ノイズ抑制、補完量の自動調整が一段だけ元の意図に近づいています。
 
 要するに、
 

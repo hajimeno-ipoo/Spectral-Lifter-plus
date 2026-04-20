@@ -71,6 +71,23 @@ struct AnalysisData: Sendable {
     let shimmerRatio: Float
     let brightnessRatio: Float
     let transientAmount: Float
+    let noiseAmount: Float
+}
+
+struct NeuralFoldoverFeatures: Sendable {
+    let harmonicConfidence: Float
+    let shimmerRatio: Float
+    let brightnessRatio: Float
+    let transientAmount: Float
+    let cutoffFrequency: Double
+    let noiseAmount: Float
+}
+
+struct NeuralFoldoverPrediction: Sendable, Equatable {
+    let foldoverMix: Float
+    let airGainBias: Float
+    let transientBoostBias: Float
+    let harshnessGuard: Float
 }
 
 enum DenoiseStrength: String, CaseIterable, Identifiable, Sendable {

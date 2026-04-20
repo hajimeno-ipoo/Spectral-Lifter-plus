@@ -16,12 +16,22 @@ struct NativeAudioProcessor {
 
         logger?.log("音声を解析します")
         let analysis = AudioAnalyzer().analyze(signal: signal)
+        let neuralPrediction = NeuralFoldoverEstimator().predict(
+            features: NeuralFoldoverFeatures(
+                harmonicConfidence: analysis.harmonicConfidence,
+                shimmerRatio: analysis.shimmerRatio,
+                brightnessRatio: analysis.brightnessRatio,
+                transientAmount: analysis.transientAmount,
+                cutoffFrequency: analysis.cutoffFrequency,
+                noiseAmount: analysis.noiseAmount
+            )
+        )
 
         logger?.log("ノイズを除去します")
         let denoised = SpectralGateDenoiser(strength: denoiseStrength).process(signal: signal)
 
         logger?.log("高域を補完します")
-        let upscaled = HarmonicUpscaler().process(signal: denoised, analysis: analysis)
+        let upscaled = HarmonicUpscaler().process(signal: denoised, analysis: analysis, prediction: neuralPrediction)
 
         logger?.log("ダイナミクスを整えます")
         let shaped = MultibandDynamicsProcessor().process(signal: upscaled)
@@ -40,7 +50,7 @@ private struct AudioAnalyzer {
         let mono = signal.monoMixdown()
         let spectrogram = SpectralDSP.stft(mono)
         guard spectrogram.frameCount > 0 else {
-            return AnalysisData(cutoffFrequency: 16_000, dominantHarmonics: [], harmonicConfidence: 0, hasShimmer: false, shimmerRatio: 0, brightnessRatio: 0, transientAmount: 0)
+            return AnalysisData(cutoffFrequency: 16_000, dominantHarmonics: [], harmonicConfidence: 0, hasShimmer: false, shimmerRatio: 0, brightnessRatio: 0, transientAmount: 0, noiseAmount: 0)
         }
 
         let magnitudes = spectrogram.magnitudes()
@@ -93,6 +103,11 @@ private struct AudioAnalyzer {
         let transientAmount = estimateTransientAmount(mono)
         let shimmerRatio = shimmerEnergy / max(bodyEnergy + upperBandEnergy, 1e-6)
         let harmonicConfidence = min(1.2, harmonicSupport / max(harmonicSupport + percussiveSpectrum[harmonicStart...harmonicEnd].reduce(0, +), 1e-6))
+        let noiseAmount = estimateNoiseAmount(
+            percussiveSpectrum: percussiveSpectrum,
+            meanSpectrum: meanSpectrum,
+            frequencyStep: frequencyStep
+        )
 
         return AnalysisData(
             cutoffFrequency: cutoff,
@@ -101,7 +116,8 @@ private struct AudioAnalyzer {
             hasShimmer: shimmerEnergy > bodyEnergy * 0.05 || steepestDrop < -4,
             shimmerRatio: shimmerRatio,
             brightnessRatio: brightnessRatio,
-            transientAmount: transientAmount
+            transientAmount: transientAmount,
+            noiseAmount: noiseAmount
         )
     }
 
@@ -165,6 +181,16 @@ private struct AudioAnalyzer {
         let averageDiff = diff.reduce(0, +) / Float(diff.count)
         let averageLevel = max(signal.map { abs($0) }.reduce(0, +) / Float(signal.count), 1e-6)
         return min(1.5, averageDiff / averageLevel)
+    }
+
+    private func estimateNoiseAmount(percussiveSpectrum: [Float], meanSpectrum: [Float], frequencyStep: Double) -> Float {
+        guard !percussiveSpectrum.isEmpty, !meanSpectrum.isEmpty else { return 0 }
+        let granularStart = min(max(Int(12_000 / frequencyStep), 0), percussiveSpectrum.count - 1)
+        let granularEnd = min(max(Int(20_000 / frequencyStep), granularStart), percussiveSpectrum.count - 1)
+        let bodyEnd = min(max(Int(4_000 / frequencyStep), 0), meanSpectrum.count - 1)
+        let granularEnergy = percussiveSpectrum[granularStart...granularEnd].reduce(0, +)
+        let bodyEnergy = meanSpectrum[0...bodyEnd].reduce(0, +)
+        return min(1.0, granularEnergy / max(granularEnergy + bodyEnergy * 0.65, 1e-6))
     }
 }
 
@@ -321,16 +347,25 @@ private struct MultibandDynamicsProcessor {
 }
 
 private struct HarmonicUpscaler {
-    func process(signal: AudioSignal, analysis: AnalysisData) -> AudioSignal {
+    func process(signal: AudioSignal, analysis: AnalysisData, prediction: NeuralFoldoverPrediction) -> AudioSignal {
         let cutoff = max(analysis.cutoffFrequency - 1_000, 12_000)
         let harmonicWeight = min(1.25, 0.55 + Float(analysis.dominantHarmonics.count) * 0.08 + analysis.harmonicConfidence * 0.26)
         let shimmerControl = analysis.hasShimmer ? max(0.65, 1 - analysis.shimmerRatio * 1.4) : 1.0
         let deficiency = Float(max(0, 16_000 - analysis.cutoffFrequency) / 4_000)
         let brightnessBoost = max(0.9, min(1.2, 1.02 + (0.55 - analysis.brightnessRatio) * 0.35))
         let baseGain = max(0.05, min(0.22, (0.08 + deficiency * 0.08) * harmonicWeight * shimmerControl))
-        let airGain = max(0.08, min(0.34, (0.10 + deficiency * 0.18) * brightnessBoost - analysis.shimmerRatio * 0.03))
-        let transientBoost = max(0.08, min(0.24, 0.12 + analysis.transientAmount * 0.06))
-        let foldoverMix = max(0.06, min(0.30, 0.08 + deficiency * 0.16 + analysis.harmonicConfidence * 0.08 - analysis.shimmerRatio * 0.04))
+        let airGain = max(
+            0.06,
+            min(0.34, (0.10 + deficiency * 0.18) * brightnessBoost - analysis.shimmerRatio * 0.03 + prediction.airGainBias)
+        ) * (1 - prediction.harshnessGuard * 0.55)
+        let transientBoost = max(
+            0.06,
+            min(0.24, 0.12 + analysis.transientAmount * 0.06 + prediction.transientBoostBias)
+        ) * (1 - prediction.harshnessGuard * 0.35)
+        let foldoverMix = max(
+            0.04,
+            min(0.32, 0.08 + deficiency * 0.16 + analysis.harmonicConfidence * 0.08 - analysis.shimmerRatio * 0.04 + prediction.foldoverMix - 0.12)
+        ) * (1 - prediction.harshnessGuard * 0.62)
 
         let channels = signal.channels.map { channel in
             let folded = foldover(channel: channel, sampleRate: signal.sampleRate, cutoff: cutoff, mix: foldoverMix)

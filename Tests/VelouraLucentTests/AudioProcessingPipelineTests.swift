@@ -45,6 +45,17 @@ struct AudioProcessingPipelineTests {
         #expect(FileManager.default.fileExists(atPath: output.path(percentEncoded: false)))
     }
 
+    @Test
+    func outputURLsUseWavEvenWhenInputExtensionIsCompressed() {
+        let inputURL = URL(fileURLWithPath: "/tmp/demo-track.mp3")
+
+        let defaultOutput = AudioProcessingService.defaultOutputURL(for: inputURL)
+        let temporaryOutput = AudioProcessingService.temporaryOutputURL(for: inputURL)
+
+        #expect(defaultOutput.pathExtension == AudioFileService.outputFileExtension)
+        #expect(temporaryOutput.pathExtension == AudioFileService.outputFileExtension)
+    }
+
     private func makeTestTone(at url: URL, duration: Double = 2) throws {
         let sampleRate = 48_000.0
         let frameCount = Int(sampleRate * duration)

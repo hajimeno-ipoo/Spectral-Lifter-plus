@@ -1793,7 +1793,7 @@ struct ContentView: View {
     }
 
     private func allowedAudioTypes(for fileExtension: String) -> [UTType] {
-        [UTType(filenameExtension: fileExtension), .audio].compactMap { $0 }
+        [UTType(filenameExtension: fileExtension), AudioFileService.outputContentType, .audio].compactMap { $0 }
     }
 
     private enum CompressorField {

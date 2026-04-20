@@ -35,14 +35,14 @@ struct MasteringService {
         let directory = inputFile.deletingLastPathComponent()
         let fileName = inputFile.deletingPathExtension().lastPathComponent
         let baseName = fileName.hasSuffix("_mastered") ? fileName : "\(fileName)_mastered"
-        let ext = inputFile.pathExtension
-        return directory.appendingPathComponent(baseName).appendingPathExtension(ext)
+        return directory
+            .appendingPathComponent(baseName)
+            .appendingPathExtension(AudioFileService.outputFileExtension)
     }
 
     static func temporaryOutputURL(for inputFile: URL) -> URL {
         let fileName = inputFile.deletingPathExtension().lastPathComponent
         let baseName = fileName.hasSuffix("_mastered") ? fileName : "\(fileName)_mastered"
-        let ext = inputFile.pathExtension
         let tempDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("VelouraLucentPreview", isDirectory: true)
         try? FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
@@ -50,7 +50,7 @@ struct MasteringService {
         let shortID = String(UUID().uuidString.prefix(6)).lowercased()
         return tempDirectory
             .appendingPathComponent("\(sanitizedName)_\(shortID)")
-            .appendingPathExtension(ext)
+            .appendingPathExtension(AudioFileService.outputFileExtension)
     }
 
     private static func shortPreviewBaseName(from fileName: String) -> String {
