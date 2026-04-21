@@ -267,12 +267,16 @@ private struct SpectralGateDenoiser: Sendable {
         let smoothedFrameEnergy = SpectralDSP.movingAverage(frameEnergy, windowSize: 7)
 
         for frameIndex in sourceFrameIndices {
+            let realFrame = spectrogram.real[frameIndex]
+            let imagFrame = spectrogram.imag[frameIndex]
+            let previousRealFrame = frameIndex > 0 ? spectrogram.real[frameIndex - 1] : []
+            let previousImagFrame = frameIndex > 0 ? spectrogram.imag[frameIndex - 1] : []
             for binIndex in 0..<binCount {
-                let magnitude = spectrogram.magnitude(frameIndex: frameIndex, binIndex: binIndex)
+                let magnitude = hypotf(realFrame[binIndex], imagFrame[binIndex])
                 noiseSums[binIndex] += magnitude
                 noiseMinimums[binIndex] = min(noiseMinimums[binIndex], magnitude)
                 if frameIndex > 0 {
-                    let previous = spectrogram.magnitude(frameIndex: frameIndex - 1, binIndex: binIndex)
+                    let previous = hypotf(previousRealFrame[binIndex], previousImagFrame[binIndex])
                     granularSums[binIndex] += abs(magnitude - previous)
                 }
             }
@@ -291,27 +295,33 @@ private struct SpectralGateDenoiser: Sendable {
         for frameIndex in 0..<spectrogram.frameCount {
             let transientRatio = frameEnergy[frameIndex] / max(smoothedFrameEnergy[frameIndex], 1e-6)
             let transientLift = max(0, min(0.35, (transientRatio - 1) * tuning.transientProtection))
-            for binIndex in 0..<spectrogram.binCount {
-                let magnitude = hypotf(spectrogram.real[frameIndex][binIndex], spectrogram.imag[frameIndex][binIndex])
-                let threshold = noiseProfile[binIndex] * tuning.thresholdMultiplier * coefficients.thresholdScale[binIndex]
-                let floor = coefficients.floor[binIndex]
-                let rawMask = max(floor, min(1.0, (magnitude - threshold) / max(magnitude, 1e-6)))
-                let granularActivity: Float
-                if frameIndex > 0 {
-                    let previous = spectrogram.magnitude(frameIndex: frameIndex - 1, binIndex: binIndex)
-                    granularActivity = abs(magnitude - previous)
-                } else {
-                    granularActivity = 0
+            let previousRealFrame = frameIndex > 0 ? spectrogram.real[frameIndex - 1] : []
+            let previousImagFrame = frameIndex > 0 ? spectrogram.imag[frameIndex - 1] : []
+            spectrogram.real[frameIndex].withUnsafeMutableBufferPointer { realFrame in
+                spectrogram.imag[frameIndex].withUnsafeMutableBufferPointer { imagFrame in
+                    for binIndex in 0..<binCount {
+                        let magnitude = hypotf(realFrame[binIndex], imagFrame[binIndex])
+                        let threshold = noiseProfile[binIndex] * tuning.thresholdMultiplier * coefficients.thresholdScale[binIndex]
+                        let floor = coefficients.floor[binIndex]
+                        let rawMask = max(floor, min(1.0, (magnitude - threshold) / max(magnitude, 1e-6)))
+                        let granularActivity: Float
+                        if frameIndex > 0 {
+                            let previous = hypotf(previousRealFrame[binIndex], previousImagFrame[binIndex])
+                            granularActivity = abs(magnitude - previous)
+                        } else {
+                            granularActivity = 0
+                        }
+                        let granularThreshold = granularProfile[binIndex] * coefficients.granularThresholdScale[binIndex]
+                        let granularExcess = max(0, granularActivity - granularThreshold)
+                        let granularMask = max(
+                            floor,
+                            1 - min(0.72, granularExcess / max(magnitude + granularThreshold, 1e-6)) * tuning.granularReduction
+                        )
+                        let mask = min(1.0, max(rawMask, granularMask) + transientLift)
+                        realFrame[binIndex] *= mask
+                        imagFrame[binIndex] *= mask
+                    }
                 }
-                let granularThreshold = granularProfile[binIndex] * coefficients.granularThresholdScale[binIndex]
-                let granularExcess = max(0, granularActivity - granularThreshold)
-                let granularMask = max(
-                    floor,
-                    1 - min(0.72, granularExcess / max(magnitude + granularThreshold, 1e-6)) * tuning.granularReduction
-                )
-                let mask = min(1.0, max(rawMask, granularMask) + transientLift)
-                spectrogram.real[frameIndex][binIndex] *= mask
-                spectrogram.imag[frameIndex][binIndex] *= mask
             }
         }
 
