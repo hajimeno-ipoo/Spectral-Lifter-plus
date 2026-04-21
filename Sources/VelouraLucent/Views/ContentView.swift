@@ -2180,28 +2180,16 @@ struct ContentView: View {
                     }
                 }
 
-                async let correctedSnapshotTask: AudioPreviewSnapshot = Task.detached(priority: .utility) {
-                    try AudioFileService.makePreviewSnapshot(for: outputFile)
-                }.value
-                async let correctedMetricsTask: AudioMetricSnapshot = Task.detached(priority: .utility) {
-                    try AudioComparisonService.analyze(fileURL: outputFile)
-                }.value
-                async let correctedSpectrogramTask: SpectrogramSnapshot = Task.detached(priority: .utility) {
-                    try AudioFileService.makeSpectrogramSnapshot(for: outputFile)
-                }.value
-
-                let correctedSnapshot = try await correctedSnapshotTask
-                let correctedMetrics = try await correctedMetricsTask
-                let correctedSpectrogram = try await correctedSpectrogramTask
+                let correctedArtifacts = try await makeAudioAnalysisArtifacts(for: outputFile)
 
                 await MainActor.run {
                     guard isCurrentInputSelection(selectionID, inputFile: inputFile) else { return }
                     job.finishSuccess(outputFile)
                     preview.preparePreview(for: job.inputFile, target: .input)
-                    preview.setPreviewSnapshot(correctedSnapshot, for: .corrected, sourceURL: outputFile)
+                    preview.setPreviewSnapshot(correctedArtifacts.previewSnapshot, for: .corrected, sourceURL: outputFile)
                     preview.preparePreview(for: nil, target: .mastered)
-                    job.finishOutputMetricAnalysis(correctedMetrics)
-                    job.finishOutputSpectrogram(correctedSpectrogram)
+                    job.finishOutputMetricAnalysis(correctedArtifacts.metrics)
+                    job.finishOutputSpectrogram(correctedArtifacts.spectrogram)
                 }
             } catch {
                 await MainActor.run {
@@ -2229,26 +2217,14 @@ struct ContentView: View {
                     }
                 }
 
-                async let masteredSnapshotTask: AudioPreviewSnapshot = Task.detached(priority: .utility) {
-                    try AudioFileService.makePreviewSnapshot(for: masteredFile)
-                }.value
-                async let masteredMetricsTask: AudioMetricSnapshot = Task.detached(priority: .utility) {
-                    try AudioComparisonService.analyze(fileURL: masteredFile)
-                }.value
-                async let masteredSpectrogramTask: SpectrogramSnapshot = Task.detached(priority: .utility) {
-                    try AudioFileService.makeSpectrogramSnapshot(for: masteredFile)
-                }.value
-
-                let masteredSnapshot = try await masteredSnapshotTask
-                let masteredMetrics = try await masteredMetricsTask
-                let masteredSpectrogram = try await masteredSpectrogramTask
+                let masteredArtifacts = try await makeAudioAnalysisArtifacts(for: masteredFile)
 
                 await MainActor.run {
                     guard isCurrentMasteringSelection(selectionID, correctedFile: correctedFile) else { return }
                     job.finishMasteringSuccess(masteredFile)
-                    preview.setPreviewSnapshot(masteredSnapshot, for: .mastered, sourceURL: masteredFile)
-                    job.finishMasteredMetricAnalysis(masteredMetrics)
-                    job.finishMasteredSpectrogram(masteredSpectrogram)
+                    preview.setPreviewSnapshot(masteredArtifacts.previewSnapshot, for: .mastered, sourceURL: masteredFile)
+                    job.finishMasteredMetricAnalysis(masteredArtifacts.metrics)
+                    job.finishMasteredSpectrogram(masteredArtifacts.spectrogram)
                 }
             } catch {
                 await MainActor.run {
@@ -2276,30 +2252,36 @@ struct ContentView: View {
         case score(Int)
     }
 
+    private struct AudioAnalysisArtifacts: Sendable {
+        let previewSnapshot: AudioPreviewSnapshot
+        let metrics: AudioMetricSnapshot
+        let spectrogram: SpectrogramSnapshot
+    }
+
+    private struct MetricAnalysisArtifacts: Sendable {
+        let metrics: AudioMetricSnapshot
+        let spectrogram: SpectrogramSnapshot
+    }
+
     private func analyzeMetrics(for url: URL, target: MetricTarget, selectionID: UUID) {
         job.beginMetricAnalysis()
 
         Task {
             do {
-                let metrics = try await Task.detached(priority: .utility) {
-                    try AudioComparisonService.analyze(fileURL: url)
-                }.value
-                let spectrogram = try await Task.detached(priority: .utility) {
-                    try AudioFileService.makeSpectrogramSnapshot(for: url)
-                }.value
+                let artifacts = try await makeMetricAnalysisArtifacts(for: url)
 
                 await MainActor.run {
                     guard isCurrentMetricSelection(target: target, selectionID: selectionID, fileURL: url) else { return }
                     switch target {
                     case .input:
-                        job.finishInputMetricAnalysis(metrics)
-                        job.finishInputSpectrogram(spectrogram)
+                        job.finishInputMetricAnalysis(artifacts.metrics)
+                        job.finishInputSpectrogram(artifacts.spectrogram)
                     case .corrected:
-                        job.finishOutputMetricAnalysis(metrics)
-                        job.finishOutputSpectrogram(spectrogram)
+                        job.finishOutputMetricAnalysis(artifacts.metrics)
+                        job.finishOutputSpectrogram(artifacts.spectrogram)
                     case .mastered:
-                        job.finishMasteredMetricAnalysis(metrics)
-                        job.finishMasteredSpectrogram(spectrogram)
+                        job.finishMasteredMetricAnalysis(artifacts.metrics)
+                        job.finishMasteredSpectrogram(artifacts.spectrogram)
                     }
                 }
             } catch {
@@ -2309,6 +2291,29 @@ struct ContentView: View {
                 }
             }
         }
+    }
+
+    private func makeAudioAnalysisArtifacts(for url: URL) async throws -> AudioAnalysisArtifacts {
+        try await Task.detached(priority: .utility) {
+            let signal = try AudioFileService.loadAudio(from: url)
+            async let previewSnapshot = AudioFileService.makePreviewSnapshot(from: signal)
+            async let metrics = try AudioComparisonService.analyze(signal: signal)
+            async let spectrogram = AudioFileService.makeSpectrogramSnapshot(from: signal)
+            return try await AudioAnalysisArtifacts(
+                previewSnapshot: previewSnapshot,
+                metrics: metrics,
+                spectrogram: spectrogram
+            )
+        }.value
+    }
+
+    private func makeMetricAnalysisArtifacts(for url: URL) async throws -> MetricAnalysisArtifacts {
+        try await Task.detached(priority: .utility) {
+            let signal = try AudioFileService.loadAudio(from: url)
+            async let metrics = try AudioComparisonService.analyze(signal: signal)
+            async let spectrogram = AudioFileService.makeSpectrogramSnapshot(from: signal)
+            return try await MetricAnalysisArtifacts(metrics: metrics, spectrogram: spectrogram)
+        }.value
     }
 
     private func preparePreviewCards() {

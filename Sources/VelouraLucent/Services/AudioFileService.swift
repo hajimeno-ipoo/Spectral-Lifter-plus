@@ -65,6 +65,10 @@ enum AudioFileService {
 
     static func makePreviewSnapshot(for url: URL, bucketCount: Int = previewBucketCount) throws -> AudioPreviewSnapshot {
         let signal = try loadAudio(from: url)
+        return makePreviewSnapshot(from: signal, bucketCount: bucketCount)
+    }
+
+    static func makePreviewSnapshot(from signal: AudioSignal, bucketCount: Int = previewBucketCount) -> AudioPreviewSnapshot {
         let mono = signal.monoMixdown()
         guard !mono.isEmpty else {
             return AudioPreviewSnapshot(

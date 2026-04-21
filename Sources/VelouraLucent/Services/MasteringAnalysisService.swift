@@ -21,10 +21,11 @@ enum MasteringAnalysisService {
             )
         }
 
+        let spectrogram = SpectralDSP.stft(mono)
         let loudness = integratedLoudness(signal: signal)
         let peak = approximateTruePeak(signal.channels)
-        let bandLevels = bandLevels(for: mono, sampleRate: signal.sampleRate)
-        let harshness = harshnessScore(for: mono, sampleRate: signal.sampleRate)
+        let bandLevels = bandLevels(for: spectrogram, sampleRate: signal.sampleRate)
+        let harshness = harshnessScore(for: spectrogram, sampleRate: signal.sampleRate)
         let width = stereoWidth(for: signal)
 
         return MasteringAnalysis(
@@ -65,8 +66,7 @@ enum MasteringAnalysisService {
         channels.map(oversampledPeak).max() ?? 0
     }
 
-    private static func bandLevels(for mono: [Float], sampleRate: Double) -> (low: Double, mid: Double, high: Double) {
-        let spectrogram = SpectralDSP.stft(mono)
+    private static func bandLevels(for spectrogram: Spectrogram, sampleRate: Double) -> (low: Double, mid: Double, high: Double) {
         guard spectrogram.frameCount > 0 else {
             return (-120, -120, -120)
         }
@@ -89,8 +89,7 @@ enum MasteringAnalysisService {
         return 20 * log10(max(Double(rms), 1e-12))
     }
 
-    private static func harshnessScore(for mono: [Float], sampleRate: Double) -> Float {
-        let spectrogram = SpectralDSP.stft(mono)
+    private static func harshnessScore(for spectrogram: Spectrogram, sampleRate: Double) -> Float {
         guard spectrogram.frameCount > 0 else { return 0 }
         let meanSpectrum = spectrogram.meanMagnitudes()
         let step = sampleRate / Double(spectrogram.fftSize)
@@ -102,7 +101,7 @@ enum MasteringAnalysisService {
         return min(1.0, upperMid / max(upperMid + air, 1e-6))
     }
 
-    private static func stereoWidth(for signal: AudioSignal) -> Float {
+    static func stereoWidth(for signal: AudioSignal) -> Float {
         guard signal.channels.count >= 2 else { return 0 }
         let left = signal.channels[0]
         let right = signal.channels[1]

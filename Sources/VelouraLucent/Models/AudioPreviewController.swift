@@ -190,24 +190,18 @@ final class AudioPreviewController: NSObject, AVAudioPlayerDelegate {
         integratedLoudnessByTarget[target] = nil
 
         previewTasks[target] = Task {
-            async let snapshotTask: AudioPreviewSnapshot = Task.detached(priority: .utility) {
-                try AudioFileService.makePreviewSnapshot(for: url)
-            }.value
-            async let loudnessTask: Float = Task.detached(priority: .utility) {
+            let preview = try? await Task.detached(priority: .utility) {
                 let signal = try AudioFileService.loadAudio(from: url)
-                return MasteringAnalysisService.integratedLoudness(signal: signal)
+                async let snapshot = AudioFileService.makePreviewSnapshot(from: signal)
+                async let loudness = MasteringAnalysisService.integratedLoudness(signal: signal)
+                return await (snapshot, loudness)
             }.value
-
-            let snapshot = try? await snapshotTask
-            let loudness = try? await loudnessTask
 
             guard !Task.isCancelled else { return }
             guard previewSourceURLs[target] == url else { return }
-            if let loudness {
-                integratedLoudnessByTarget[target] = loudness
-            }
-            if let snapshot {
-                setPreviewSnapshot(snapshot, for: target, sourceURL: url)
+            if let preview {
+                integratedLoudnessByTarget[target] = preview.1
+                setPreviewSnapshot(preview.0, for: target, sourceURL: url)
             }
             previewTasks[target] = nil
         }

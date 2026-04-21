@@ -35,7 +35,7 @@ enum AudioBandCatalog {
     ]
 }
 
-struct AudioSignal {
+struct AudioSignal: Sendable {
     var channels: [[Float]]
     var sampleRate: Double
 
