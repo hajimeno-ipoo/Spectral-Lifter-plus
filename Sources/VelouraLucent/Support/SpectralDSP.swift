@@ -109,11 +109,15 @@ enum SpectralDSP {
 
         var output = Array(repeating: Float.zero, count: outputLength)
         var windowSums = Array(repeating: Float.zero, count: outputLength)
+        var fullReal = Array(repeating: Float.zero, count: fftSize)
+        var fullImag = Array(repeating: Float.zero, count: fftSize)
+        var outputReal = Array(repeating: Float.zero, count: fftSize)
+        var outputImag = Array(repeating: Float.zero, count: fftSize)
+        var frame = Array(repeating: Float.zero, count: fftSize)
+        let inverseScale = 1 / Float(fftSize)
 
         for frameIndex in 0..<spectrogram.frameCount {
             let start = frameIndex * hopSize
-            var fullReal = Array(repeating: Float.zero, count: fftSize)
-            var fullImag = Array(repeating: Float.zero, count: fftSize)
             let halfReal = spectrogram.real[frameIndex]
             let halfImag = spectrogram.imag[frameIndex]
             fullReal[0..<halfReal.count] = halfReal[0..<halfReal.count]
@@ -126,11 +130,9 @@ enum SpectralDSP {
                 }
             }
 
-            var outputReal = Array(repeating: Float.zero, count: fftSize)
-            var outputImag = Array(repeating: Float.zero, count: fftSize)
             dft.transform(inputReal: fullReal, inputImaginary: fullImag, outputReal: &outputReal, outputImaginary: &outputImag)
 
-            var frame = outputReal.map { $0 / Float(fftSize) }
+            vDSP.multiply(inverseScale, outputReal, result: &frame)
             vDSP.multiply(frame, window, result: &frame)
             let available = min(fftSize, outputLength - start)
             guard available > 0 else { continue }
