@@ -115,6 +115,28 @@ struct ContentView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+
+            HStack(alignment: .top, spacing: 16) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("解析モード")
+                        .font(.subheadline.weight(.semibold))
+                    Picker("解析モード", selection: $job.selectedAnalysisMode) {
+                        ForEach(AudioAnalysisMode.allCases) { mode in
+                            Text(mode.title).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .disabled(job.isProcessing)
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("説明")
+                        .font(.subheadline.weight(.semibold))
+                    Text(job.selectedAnalysisMode.summary)
+                        .foregroundStyle(job.selectedAnalysisMode == .experimentalMetal ? .orange : .secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
     }
 
@@ -1802,7 +1824,8 @@ struct ContentView: View {
             do {
                 let outputFile = try await AudioProcessingService().process(
                     inputFile: inputFile,
-                    denoiseStrength: job.selectedDenoiseStrength
+                    denoiseStrength: job.selectedDenoiseStrength,
+                    analysisMode: job.selectedAnalysisMode
                 ) { message in
                     Task { @MainActor in
                         job.appendLog(message)

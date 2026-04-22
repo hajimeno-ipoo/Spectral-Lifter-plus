@@ -16,6 +16,13 @@ struct ProcessingJobTests {
     }
 
     @Test
+    func analysisModeDefaultsToCPU() {
+        let job = ProcessingJob()
+
+        #expect(job.selectedAnalysisMode == .cpu)
+    }
+
+    @Test
     func progressMovesForwardWhenLogsArrive() {
         let job = ProcessingJob()
         let input = URL(fileURLWithPath: "/tmp/input.wav")

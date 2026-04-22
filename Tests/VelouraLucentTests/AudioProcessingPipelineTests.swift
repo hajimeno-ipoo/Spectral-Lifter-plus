@@ -46,6 +46,23 @@ struct AudioProcessingPipelineTests {
     }
 
     @Test
+    func pipelineAcceptsExperimentalMetalAnalysisMode() async throws {
+        let tempDirectory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        let inputURL = tempDirectory.appending(path: "metal-analysis.wav")
+
+        try makeTestTone(at: inputURL)
+
+        let output = try await AudioProcessingService().process(
+            inputFile: inputURL,
+            denoiseStrength: .balanced,
+            analysisMode: .experimentalMetal
+        ) { _ in }
+
+        #expect(FileManager.default.fileExists(atPath: output.path()))
+    }
+
+    @Test
     func outputURLsUseWavEvenWhenInputExtensionIsCompressed() {
         let inputURL = URL(fileURLWithPath: "/tmp/demo-track.mp3")
 

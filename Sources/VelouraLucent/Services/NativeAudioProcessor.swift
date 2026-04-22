@@ -21,9 +21,31 @@ struct NativeAudioProcessingBenchmark: Equatable, Sendable {
     }
 }
 
-enum AudioAnalysisMode: Equatable, Sendable {
+enum AudioAnalysisMode: String, CaseIterable, Identifiable, Equatable, Sendable {
     case cpu
     case experimentalMetal
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .cpu:
+            return "安定CPU"
+        case .experimentalMetal:
+            return "実験Metal"
+        }
+    }
+
+    var summary: String {
+        switch self {
+        case .cpu:
+            return "安定した解析を使います"
+        case .experimentalMetal:
+            return MetalAudioAnalysisProcessor().isAvailable
+                ? "解析の一部をMetalで高速化します"
+                : "このMacではMetal解析を使えないためCPUへ戻ります"
+        }
+    }
 }
 
 struct AudioSeparatedMeanSpectra: Equatable, Sendable {
