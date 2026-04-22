@@ -53,7 +53,10 @@ struct AudioAnalysisModeTests {
     }
 
     @Test
-    func cpuTemporalMedian17MatchesReferenceImplementation() {
+    func metalTemporalMedian17MatchesReferenceImplementation() {
+        let processor = MetalAudioAnalysisProcessor()
+        guard processor.isAvailable else { return }
+
         let frameCount = 31
         let binCount = 13
         let valueCount = frameCount * binCount
@@ -63,7 +66,7 @@ struct AudioAnalysisModeTests {
             return Float(sample + modulation)
         }
 
-        let temporalMedian = MetalAudioAnalysisProcessor().makeTemporalMedian17(
+        let temporalMedian = processor.makeTemporalMedian17(
             magnitudes: magnitudes,
             frameCount: frameCount,
             binCount: binCount
@@ -74,7 +77,8 @@ struct AudioAnalysisModeTests {
             binCount: binCount
         )
 
-        #expect(temporalMedian == reference)
+        #expect(temporalMedian != nil)
+        #expect(temporalMedian ?? [] == reference)
     }
 
     @Test
