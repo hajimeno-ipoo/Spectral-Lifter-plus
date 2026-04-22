@@ -7,7 +7,7 @@ import Metal
 struct MetalAudioAnalysisProcessor: Sendable {
     var isAvailable: Bool {
         #if canImport(Metal)
-        MTLCreateSystemDefaultDevice() != nil
+        Self.cache.context() != nil
         #else
         false
         #endif
@@ -74,26 +74,22 @@ private extension MetalAudioAnalysisProcessor {
         #if canImport(Metal)
         let valueCount = spectrogram.frameCount * spectrogram.binCount
         guard valueCount > 0,
-              let device = MTLCreateSystemDefaultDevice(),
-              let queue = device.makeCommandQueue(),
-              let library = try? device.makeLibrary(source: Self.metalSource, options: nil),
-              let function = library.makeFunction(name: "computeMagnitudes"),
-              let pipeline = try? device.makeComputePipelineState(function: function),
-              let realBuffer = device.makeBuffer(bytes: spectrogram.real, length: valueCount * MemoryLayout<Float>.stride),
-              let imagBuffer = device.makeBuffer(bytes: spectrogram.imag, length: valueCount * MemoryLayout<Float>.stride),
-              let outputBuffer = device.makeBuffer(length: valueCount * MemoryLayout<Float>.stride),
-              let commandBuffer = queue.makeCommandBuffer(),
+              let context = Self.cache.context(),
+              let realBuffer = context.device.makeBuffer(bytes: spectrogram.real, length: valueCount * MemoryLayout<Float>.stride),
+              let imagBuffer = context.device.makeBuffer(bytes: spectrogram.imag, length: valueCount * MemoryLayout<Float>.stride),
+              let outputBuffer = context.device.makeBuffer(length: valueCount * MemoryLayout<Float>.stride),
+              let commandBuffer = context.commandQueue.makeCommandBuffer(),
               let encoder = commandBuffer.makeComputeCommandEncoder() else {
             return nil
         }
 
-        encoder.setComputePipelineState(pipeline)
+        encoder.setComputePipelineState(context.pipeline)
         encoder.setBuffer(realBuffer, offset: 0, index: 0)
         encoder.setBuffer(imagBuffer, offset: 0, index: 1)
         encoder.setBuffer(outputBuffer, offset: 0, index: 2)
         encoder.setBytes([UInt32(valueCount)], length: MemoryLayout<UInt32>.stride, index: 3)
 
-        let threadCount = min(pipeline.maxTotalThreadsPerThreadgroup, max(pipeline.threadExecutionWidth, 1))
+        let threadCount = min(context.pipeline.maxTotalThreadsPerThreadgroup, max(context.pipeline.threadExecutionWidth, 1))
         let threadsPerGroup = MTLSize(width: threadCount, height: 1, depth: 1)
         let grid = MTLSize(width: valueCount, height: 1, depth: 1)
         encoder.dispatchThreads(grid, threadsPerThreadgroup: threadsPerGroup)
@@ -134,3 +130,55 @@ private extension MetalAudioAnalysisProcessor {
         """
     }
 }
+
+#if canImport(Metal)
+private extension MetalAudioAnalysisProcessor {
+    static let cache = MetalAudioAnalysisCache()
+}
+
+private final class MetalAudioAnalysisCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cachedContext: MetalAudioAnalysisContext?
+
+    func context() -> MetalAudioAnalysisContext? {
+        lock.lock()
+        defer { lock.unlock() }
+
+        if let cachedContext {
+            return cachedContext
+        }
+
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue(),
+              let library = try? device.makeLibrary(source: MetalAudioAnalysisProcessor.metalSource, options: nil),
+              let function = library.makeFunction(name: "computeMagnitudes"),
+              let pipeline = try? device.makeComputePipelineState(function: function) else {
+            return nil
+        }
+
+        let context = MetalAudioAnalysisContext(
+            device: device,
+            commandQueue: commandQueue,
+            pipeline: pipeline
+        )
+        cachedContext = context
+        return context
+    }
+}
+
+private final class MetalAudioAnalysisContext {
+    let device: any MTLDevice
+    let commandQueue: any MTLCommandQueue
+    let pipeline: any MTLComputePipelineState
+
+    init(
+        device: any MTLDevice,
+        commandQueue: any MTLCommandQueue,
+        pipeline: any MTLComputePipelineState
+    ) {
+        self.device = device
+        self.commandQueue = commandQueue
+        self.pipeline = pipeline
+    }
+}
+#endif
