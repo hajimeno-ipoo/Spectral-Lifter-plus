@@ -33,28 +33,6 @@ struct Spectrogram {
         self.frameCount = frameCount
     }
 
-    static func zeroed(
-        frameCount: Int,
-        fftSize: Int,
-        hopSize: Int,
-        originalLength: Int,
-        leadingPadding: Int,
-        trailingPadding: Int
-    ) -> Spectrogram {
-        let binCount = fftSize / 2 + 1
-        let valueCount = frameCount * binCount
-        return Spectrogram(
-            real: Array(repeating: Float.zero, count: valueCount),
-            imag: Array(repeating: Float.zero, count: valueCount),
-            fftSize: fftSize,
-            hopSize: hopSize,
-            originalLength: originalLength,
-            leadingPadding: leadingPadding,
-            trailingPadding: trailingPadding,
-            frameCount: frameCount
-        )
-    }
-
     func storageIndex(frameIndex: Int, binIndex: Int) -> Int {
         frameIndex * binCount + binIndex
     }
@@ -78,12 +56,6 @@ struct Spectrogram {
         let index = storageIndex(frameIndex: frameIndex, binIndex: binIndex)
         real[index] *= gain
         imag[index] *= gain
-    }
-
-    mutating func addToBin(frameIndex: Int, binIndex: Int, real realValue: Float, imag imagValue: Float) {
-        let index = storageIndex(frameIndex: frameIndex, binIndex: binIndex)
-        real[index] += realValue
-        imag[index] += imagValue
     }
 
     func meanMagnitudes() -> [Float] {
@@ -166,25 +138,14 @@ enum SpectralDSP {
     static func istft(_ spectrogram: Spectrogram) -> [Float] {
         let fftSize = spectrogram.fftSize
         let hopSize = spectrogram.hopSize
-        let outputLength = max(
-            spectrogram.originalLength + spectrogram.leadingPadding + spectrogram.trailingPadding,
-            fftSize + max(0, spectrogram.frameCount - 1) * hopSize
-        )
-        let resources = resourceCache.resources(for: fftSize)
-        let window = resources.window
-        let dft = resources.inverse
-
-        var output = Array(repeating: Float.zero, count: outputLength)
-        var windowSums = Array(repeating: Float.zero, count: outputLength)
-        var fullReal = Array(repeating: Float.zero, count: fftSize)
-        var fullImag = Array(repeating: Float.zero, count: fftSize)
-        var outputReal = Array(repeating: Float.zero, count: fftSize)
-        var outputImag = Array(repeating: Float.zero, count: fftSize)
-        var frame = Array(repeating: Float.zero, count: fftSize)
-        let inverseScale = 1 / Float(fftSize)
-
-        for frameIndex in 0..<spectrogram.frameCount {
-            let start = frameIndex * hopSize
+        return inverseTransform(
+            frameCount: spectrogram.frameCount,
+            fftSize: fftSize,
+            hopSize: hopSize,
+            originalLength: spectrogram.originalLength,
+            leadingPadding: spectrogram.leadingPadding,
+            trailingPadding: spectrogram.trailingPadding
+        ) { frameIndex, fullReal, fullImag in
             let inputStart = frameIndex * spectrogram.binCount
             fullReal[0..<spectrogram.binCount] = spectrogram.real[inputStart..<(inputStart + spectrogram.binCount)]
             fullImag[0..<spectrogram.binCount] = spectrogram.imag[inputStart..<(inputStart + spectrogram.binCount)]
@@ -196,6 +157,69 @@ enum SpectralDSP {
                     fullImag[fftSize - index] = -spectrogram.imag[sourceIndex]
                 }
             }
+        }
+    }
+
+    static func istft(
+        frameCount: Int,
+        fftSize: Int,
+        hopSize: Int,
+        originalLength: Int,
+        leadingPadding: Int,
+        trailingPadding: Int,
+        fillHalfSpectrum: (_ frameIndex: Int, _ binCount: Int, _ real: inout [Float], _ imag: inout [Float]) -> Void
+    ) -> [Float] {
+        let binCount = fftSize / 2 + 1
+        return inverseTransform(
+            frameCount: frameCount,
+            fftSize: fftSize,
+            hopSize: hopSize,
+            originalLength: originalLength,
+            leadingPadding: leadingPadding,
+            trailingPadding: trailingPadding
+        ) { frameIndex, fullReal, fullImag in
+            for index in fullReal.indices {
+                fullReal[index] = .zero
+                fullImag[index] = .zero
+            }
+            fillHalfSpectrum(frameIndex, binCount, &fullReal, &fullImag)
+            if binCount > 2 {
+                for index in 1..<(binCount - 1) {
+                    fullReal[fftSize - index] = fullReal[index]
+                    fullImag[fftSize - index] = -fullImag[index]
+                }
+            }
+        }
+    }
+
+    private static func inverseTransform(
+        frameCount: Int,
+        fftSize: Int,
+        hopSize: Int,
+        originalLength: Int,
+        leadingPadding: Int,
+        trailingPadding: Int,
+        prepareFrame: (_ frameIndex: Int, _ fullReal: inout [Float], _ fullImag: inout [Float]) -> Void
+    ) -> [Float] {
+        let outputLength = max(
+            originalLength + leadingPadding + trailingPadding,
+            fftSize + max(0, frameCount - 1) * hopSize
+        )
+        let resources = resourceCache.resources(for: fftSize)
+        let window = resources.window
+        let dft = resources.inverse
+        var output = Array(repeating: Float.zero, count: outputLength)
+        var windowSums = Array(repeating: Float.zero, count: outputLength)
+        var fullReal = Array(repeating: Float.zero, count: fftSize)
+        var fullImag = Array(repeating: Float.zero, count: fftSize)
+        var outputReal = Array(repeating: Float.zero, count: fftSize)
+        var outputImag = Array(repeating: Float.zero, count: fftSize)
+        var frame = Array(repeating: Float.zero, count: fftSize)
+        let inverseScale = 1 / Float(fftSize)
+
+        for frameIndex in 0..<frameCount {
+            let start = frameIndex * hopSize
+            prepareFrame(frameIndex, &fullReal, &fullImag)
 
             dft.transform(inputReal: fullReal, inputImaginary: fullImag, outputReal: &outputReal, outputImaginary: &outputImag)
 
@@ -213,8 +237,8 @@ enum SpectralDSP {
             output[index] /= windowSums[index]
         }
 
-        let start = min(spectrogram.leadingPadding, output.count)
-        let end = min(start + spectrogram.originalLength, output.count)
+        let start = min(leadingPadding, output.count)
+        let end = min(start + originalLength, output.count)
         return Array(output[start..<end])
     }
 

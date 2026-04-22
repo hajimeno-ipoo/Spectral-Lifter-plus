@@ -474,32 +474,24 @@ private struct HarmonicUpscaler: Sendable {
             return Array(repeating: 0, count: channel.count)
         }
 
-        var folded = Spectrogram.zeroed(
+        return SpectralDSP.istft(
             frameCount: spectrogram.frameCount,
             fftSize: spectrogram.fftSize,
             hopSize: spectrogram.hopSize,
             originalLength: spectrogram.originalLength,
             leadingPadding: spectrogram.leadingPadding,
             trailingPadding: spectrogram.trailingPadding
-        )
-
-        for frameIndex in 0..<spectrogram.frameCount {
+        ) { frameIndex, _, realFrame, imagFrame in
             for sourceBin in sourceStart...sourceEnd {
                 let targetBin = min(spectrogram.binCount - 1, sourceBin * 2)
                 guard targetBin >= targetStart else { continue }
                 let normalizedPosition = Float(targetBin - targetStart) / Float(max(spectrogram.binCount - targetStart - 1, 1))
                 let lift = mix * (1 - normalizedPosition * 0.45)
                 let sourceIndex = spectrogram.storageIndex(frameIndex: frameIndex, binIndex: sourceBin)
-                folded.addToBin(
-                    frameIndex: frameIndex,
-                    binIndex: targetBin,
-                    real: spectrogram.real[sourceIndex] * lift,
-                    imag: spectrogram.imag[sourceIndex] * lift
-                )
+                realFrame[targetBin] += spectrogram.real[sourceIndex] * lift
+                imagFrame[targetBin] += spectrogram.imag[sourceIndex] * lift
             }
         }
-
-        return SpectralDSP.istft(folded)
     }
 }
 
