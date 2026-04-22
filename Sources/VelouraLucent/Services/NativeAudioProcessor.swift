@@ -191,7 +191,7 @@ private final class ConcurrentChannelResults: @unchecked Sendable {
     }
 }
 
-private struct AudioAnalyzer {
+struct AudioAnalyzer {
     let mode: AudioAnalysisMode
 
     init(mode: AudioAnalysisMode = .cpu) {
