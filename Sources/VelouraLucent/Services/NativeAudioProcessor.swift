@@ -4,6 +4,23 @@ protocol AudioProcessingLogger {
     func log(_ message: String)
 }
 
+struct AudioProcessingStageBenchmark: Equatable, Sendable {
+    let name: String
+    let durationSeconds: Double
+}
+
+struct NativeAudioProcessingBenchmark: Equatable, Sendable {
+    let stages: [AudioProcessingStageBenchmark]
+
+    var totalDurationSeconds: Double {
+        stages.reduce(0) { $0 + $1.durationSeconds }
+    }
+
+    func duration(for stageName: String) -> Double? {
+        stages.first { $0.name == stageName }?.durationSeconds
+    }
+}
+
 struct NativeAudioProcessor {
     func process(
         inputFile: URL,
@@ -11,37 +28,117 @@ struct NativeAudioProcessor {
         denoiseStrength: DenoiseStrength = .balanced,
         logger: AudioProcessingLogger? = nil
     ) throws {
+        _ = try run(
+            inputFile: inputFile,
+            outputFile: outputFile,
+            denoiseStrength: denoiseStrength,
+            logger: logger,
+            collectsBenchmark: false
+        )
+    }
+
+    func benchmark(
+        inputFile: URL,
+        outputFile: URL,
+        denoiseStrength: DenoiseStrength = .balanced,
+        logger: AudioProcessingLogger? = nil
+    ) throws -> NativeAudioProcessingBenchmark {
+        try run(
+            inputFile: inputFile,
+            outputFile: outputFile,
+            denoiseStrength: denoiseStrength,
+            logger: logger,
+            collectsBenchmark: true
+        )
+    }
+
+    private func run(
+        inputFile: URL,
+        outputFile: URL,
+        denoiseStrength: DenoiseStrength,
+        logger: AudioProcessingLogger?,
+        collectsBenchmark: Bool
+    ) throws -> NativeAudioProcessingBenchmark {
+        let benchmarkRecorder = collectsBenchmark ? AudioProcessingBenchmarkRecorder() : nil
+
         logger?.log("入力音声を読み込みます")
-        let signal = try AudioFileService.loadAudio(from: inputFile)
+        let signal = try measure("loadAudio", recorder: benchmarkRecorder) {
+            try AudioFileService.loadAudio(from: inputFile)
+        }
 
         logger?.log("音声を解析します")
-        let analysis = AudioAnalyzer().analyze(signal: signal)
-        let neuralPrediction = NeuralFoldoverEstimator().predict(
-            features: NeuralFoldoverFeatures(
-                harmonicConfidence: analysis.harmonicConfidence,
-                shimmerRatio: analysis.shimmerRatio,
-                brightnessRatio: analysis.brightnessRatio,
-                transientAmount: analysis.transientAmount,
-                cutoffFrequency: analysis.cutoffFrequency,
-                noiseAmount: analysis.noiseAmount
+        let analysis = measure("analyze", recorder: benchmarkRecorder) {
+            AudioAnalyzer().analyze(signal: signal)
+        }
+        let neuralPrediction = measure("neuralPrediction", recorder: benchmarkRecorder) {
+            NeuralFoldoverEstimator().predict(
+                features: NeuralFoldoverFeatures(
+                    harmonicConfidence: analysis.harmonicConfidence,
+                    shimmerRatio: analysis.shimmerRatio,
+                    brightnessRatio: analysis.brightnessRatio,
+                    transientAmount: analysis.transientAmount,
+                    cutoffFrequency: analysis.cutoffFrequency,
+                    noiseAmount: analysis.noiseAmount
+                )
             )
-        )
+        }
 
         logger?.log("ノイズを除去します")
-        let denoised = SpectralGateDenoiser(strength: denoiseStrength).process(signal: signal)
+        let denoised = measure("denoise", recorder: benchmarkRecorder) {
+            SpectralGateDenoiser(strength: denoiseStrength).process(signal: signal)
+        }
 
         logger?.log("高域を補完します")
-        let upscaled = HarmonicUpscaler().process(signal: denoised, analysis: analysis, prediction: neuralPrediction)
+        let upscaled = measure("harmonicUpscale", recorder: benchmarkRecorder) {
+            HarmonicUpscaler().process(signal: denoised, analysis: analysis, prediction: neuralPrediction)
+        }
 
         logger?.log("ダイナミクスを整えます")
-        let shaped = MultibandDynamicsProcessor().process(signal: upscaled)
+        let shaped = measure("multibandDynamics", recorder: benchmarkRecorder) {
+            MultibandDynamicsProcessor().process(signal: upscaled)
+        }
 
         logger?.log("最終音量を整えます")
-        let finalized = LoudnessProcessor().process(signal: shaped)
+        let finalized = measure("loudnessFinalize", recorder: benchmarkRecorder) {
+            LoudnessProcessor().process(signal: shaped)
+        }
 
         logger?.log("処理済みファイルを書き出します")
-        try AudioFileService.saveAudio(finalized, to: outputFile)
+        try measure("saveAudio", recorder: benchmarkRecorder) {
+            try AudioFileService.saveAudio(finalized, to: outputFile)
+        }
         logger?.log("処理が完了しました")
+
+        return NativeAudioProcessingBenchmark(stages: benchmarkRecorder?.stages ?? [])
+    }
+
+    private func measure<T>(
+        _ stageName: String,
+        recorder: AudioProcessingBenchmarkRecorder?,
+        work: () throws -> T
+    ) rethrows -> T {
+        guard let recorder else {
+            return try work()
+        }
+        return try recorder.measure(stageName, work: work)
+    }
+}
+
+private final class AudioProcessingBenchmarkRecorder {
+    private(set) var stages: [AudioProcessingStageBenchmark] = []
+
+    func measure<T>(_ stageName: String, work: () throws -> T) rethrows -> T {
+        let start = DispatchTime.now().uptimeNanoseconds
+        defer {
+            let end = DispatchTime.now().uptimeNanoseconds
+            stages.append(
+                AudioProcessingStageBenchmark(
+                    name: stageName,
+                    durationSeconds: Double(end - start) / 1_000_000_000
+                )
+            )
+        }
+        return try work()
     }
 }
 
