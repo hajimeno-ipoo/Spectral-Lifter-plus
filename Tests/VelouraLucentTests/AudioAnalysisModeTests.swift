@@ -70,50 +70,125 @@ struct AudioAnalysisModeTests {
 
     @Test
     func recordsCPUAndExperimentalMetalAnalysisBenchmarks() throws {
-        let tempDirectory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
-        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
-        let inputURL = tempDirectory.appending(path: "analysis-benchmark-input.wav")
-        let cpuOutputURL = tempDirectory.appending(path: "analysis-benchmark-cpu.wav")
-        let metalOutputURL = tempDirectory.appending(path: "analysis-benchmark-metal.wav")
+        let durations = [0.5, 1.25, 2.0]
+        let warmupIterations = 1
+        let measuredIterations = 2
+        var results: [AnalysisBenchmarkComparison] = []
 
-        try makeTestTone(at: inputURL, duration: 2)
+        for duration in durations {
+            let signal = makeTestSignal(duration: duration)
+            let cpuBenchmark = measureAnalysis(
+                label: "cpu",
+                mode: .cpu,
+                signal: signal,
+                warmupIterations: warmupIterations,
+                measuredIterations: measuredIterations
+            )
+            let metalBenchmark = measureAnalysis(
+                label: "experimentalMetal",
+                mode: .experimentalMetal,
+                signal: signal,
+                warmupIterations: warmupIterations,
+                measuredIterations: measuredIterations
+            )
 
-        let processor = NativeAudioProcessor()
-        let cpuBenchmark = try processor.benchmark(
-            inputFile: inputURL,
-            outputFile: cpuOutputURL,
-            denoiseStrength: .balanced,
-            analysisMode: .cpu
-        )
-        let metalBenchmark = try processor.benchmark(
-            inputFile: inputURL,
-            outputFile: metalOutputURL,
-            denoiseStrength: .balanced,
-            analysisMode: .experimentalMetal
-        )
+            #expect(cpuBenchmark.measuredDurations.count == measuredIterations)
+            #expect(metalBenchmark.measuredDurations.count == measuredIterations)
+            #expect(cpuBenchmark.averageDuration >= 0)
+            #expect(metalBenchmark.averageDuration >= 0)
+            results.append(
+                AnalysisBenchmarkComparison(
+                    duration: duration,
+                    cpu: cpuBenchmark,
+                    metal: metalBenchmark
+                )
+            )
+        }
 
-        #expect(cpuBenchmark.duration(for: "analyze") != nil)
-        #expect(metalBenchmark.duration(for: "analyze") != nil)
-        #expect(try Data(contentsOf: cpuOutputURL) == Data(contentsOf: metalOutputURL))
-
-        let report = analysisBenchmarkReport(cpu: cpuBenchmark, metal: metalBenchmark)
+        let report = analysisBenchmarkReport(results: results)
         let reportURL = FileManager.default.temporaryDirectory.appending(path: "VelouraLucentAnalysisModeBenchmark.txt")
         try report.write(to: reportURL, atomically: true, encoding: .utf8)
     }
 
-    private func analysisBenchmarkReport(
-        cpu: NativeAudioProcessingBenchmark,
-        metal: NativeAudioProcessingBenchmark
-    ) -> String {
-        let cpuAnalyze = cpu.duration(for: "analyze") ?? 0
-        let metalAnalyze = metal.duration(for: "analyze") ?? 0
-        return [
-            "Audio analysis mode benchmark",
-            "cpu.analyze: \(String(format: "%.6f", cpuAnalyze))s",
-            "experimentalMetal.analyze: \(String(format: "%.6f", metalAnalyze))s",
-            "cpu.total: \(String(format: "%.6f", cpu.totalDurationSeconds))s",
-            "experimentalMetal.total: \(String(format: "%.6f", metal.totalDurationSeconds))s"
-        ].joined(separator: "\n")
+    private func measureAnalysis(
+        label: String,
+        mode: AudioAnalysisMode,
+        signal: AudioSignal,
+        warmupIterations: Int,
+        measuredIterations: Int
+    ) -> AnalysisBenchmarkSummary {
+        var warmupDurations: [Double] = []
+        for _ in 0..<warmupIterations {
+            warmupDurations.append(measureSeconds {
+                _ = AudioAnalyzer(mode: mode).analyze(signal: signal)
+            })
+        }
+
+        var measuredDurations: [Double] = []
+        for _ in 0..<measuredIterations {
+            measuredDurations.append(measureSeconds {
+                _ = AudioAnalyzer(mode: mode).analyze(signal: signal)
+            })
+        }
+
+        return AnalysisBenchmarkSummary(
+            label: label,
+            warmupDurations: warmupDurations,
+            measuredDurations: measuredDurations
+        )
+    }
+
+    private func measureSeconds(_ work: () -> Void) -> Double {
+        let start = DispatchTime.now().uptimeNanoseconds
+        work()
+        let end = DispatchTime.now().uptimeNanoseconds
+        return Double(end - start) / 1_000_000_000
+    }
+
+    private func analysisBenchmarkReport(results: [AnalysisBenchmarkComparison]) -> String {
+        var lines = ["Audio analysis mode benchmark"]
+        for result in results {
+            lines.append("duration: \(String(format: "%.2f", result.duration))s")
+            lines.append(result.cpu.reportLine)
+            lines.append(result.metal.reportLine)
+            lines.append("speedup.cpu_over_experimentalMetal: \(String(format: "%.3f", result.speedRatio))x")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private struct AnalysisBenchmarkComparison {
+        let duration: Double
+        let cpu: AnalysisBenchmarkSummary
+        let metal: AnalysisBenchmarkSummary
+
+        var speedRatio: Double {
+            metal.averageDuration > 0 ? cpu.averageDuration / metal.averageDuration : 0
+        }
+    }
+
+    private struct AnalysisBenchmarkSummary {
+        let label: String
+        let warmupDurations: [Double]
+        let measuredDurations: [Double]
+
+        var averageDuration: Double {
+            guard !measuredDurations.isEmpty else { return 0 }
+            return measuredDurations.reduce(0, +) / Double(measuredDurations.count)
+        }
+
+        var minimumDuration: Double {
+            measuredDurations.min() ?? 0
+        }
+
+        var maximumDuration: Double {
+            measuredDurations.max() ?? 0
+        }
+
+        var reportLine: String {
+            let warmup = warmupDurations.map { String(format: "%.6f", $0) }.joined(separator: ",")
+            let measured = measuredDurations.map { String(format: "%.6f", $0) }.joined(separator: ",")
+            return "\(label).analyze warmup=[\(warmup)] measured=[\(measured)] avg=\(String(format: "%.6f", averageDuration))s min=\(String(format: "%.6f", minimumDuration))s max=\(String(format: "%.6f", maximumDuration))s"
+        }
     }
 
     private func makeTestSignal(duration: Double) -> AudioSignal {
