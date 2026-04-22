@@ -490,27 +490,28 @@ private struct MultibandDynamicsProcessor: Sendable {
     private func processChannel(_ channel: [Float], sampleRate: Double) -> [Float] {
         var spectrogram = SpectralDSP.stft(channel)
         let frequencyStep = sampleRate / Double(spectrogram.fftSize)
+        var bandEnergy = Array(repeating: Float.zero, count: spectrogram.frameCount)
+        var rawMask = Array(repeating: Float.zero, count: spectrogram.frameCount)
+        var smoothedMask = Array(repeating: Float.zero, count: spectrogram.frameCount)
 
         for (band, reductionDB, percentile) in bands {
             let start = min(Int(band.lowerBound / frequencyStep), spectrogram.binCount - 1)
             let end = min(Int(band.upperBound / frequencyStep), spectrogram.binCount - 1)
             guard end > start else { continue }
 
-            let bandEnergy: [Float] = (0..<spectrogram.frameCount).map { frameIndex in
-                var sum: Float = 0
-                for binIndex in start...end {
-                    sum += spectrogram.magnitude(frameIndex: frameIndex, binIndex: binIndex)
-                }
-                return sum / Float(end - start + 1)
-            }
+            fillBandEnergy(spectrogram: spectrogram, startBin: start, endBin: end, into: &bandEnergy)
             let threshold = SpectralDSP.percentile(bandEnergy, percentile)
             let reductionLinear = powf(10, -reductionDB / 20)
-            let mask = SpectralDSP.movingAverage(bandEnergy.map { energy in
-                energy > threshold ? reductionLinear + (1 - reductionLinear) * (threshold / max(energy, 1e-6)) : 1
-            }, windowSize: 5)
+            fillBandMask(
+                bandEnergy: bandEnergy,
+                threshold: threshold,
+                reductionLinear: reductionLinear,
+                into: &rawMask
+            )
+            fillMovingAverage(rawMask, windowSize: 5, into: &smoothedMask)
 
             for frameIndex in 0..<spectrogram.frameCount {
-                let gain = max(reductionLinear, min(1.0, mask[frameIndex]))
+                let gain = max(reductionLinear, min(1.0, smoothedMask[frameIndex]))
                 for binIndex in start...end {
                     spectrogram.scaleBin(frameIndex: frameIndex, binIndex: binIndex, by: gain)
                 }
@@ -518,6 +519,64 @@ private struct MultibandDynamicsProcessor: Sendable {
         }
 
         return SpectralDSP.istft(spectrogram)
+    }
+
+    private func fillBandEnergy(
+        spectrogram: Spectrogram,
+        startBin: Int,
+        endBin: Int,
+        into bandEnergy: inout [Float]
+    ) {
+        if bandEnergy.count != spectrogram.frameCount {
+            bandEnergy = Array(repeating: Float.zero, count: spectrogram.frameCount)
+        }
+
+        let binCount = Float(endBin - startBin + 1)
+        for frameIndex in 0..<spectrogram.frameCount {
+            var sum: Float = 0
+            for binIndex in startBin...endBin {
+                sum += spectrogram.magnitude(frameIndex: frameIndex, binIndex: binIndex)
+            }
+            bandEnergy[frameIndex] = sum / binCount
+        }
+    }
+
+    private func fillBandMask(
+        bandEnergy: [Float],
+        threshold: Float,
+        reductionLinear: Float,
+        into mask: inout [Float]
+    ) {
+        if mask.count != bandEnergy.count {
+            mask = Array(repeating: Float.zero, count: bandEnergy.count)
+        }
+
+        for index in bandEnergy.indices {
+            let energy = bandEnergy[index]
+            mask[index] = energy > threshold ? reductionLinear + (1 - reductionLinear) * (threshold / max(energy, 1e-6)) : 1
+        }
+    }
+
+    private func fillMovingAverage(_ values: [Float], windowSize: Int, into smoothed: inout [Float]) {
+        guard windowSize > 1, !values.isEmpty else {
+            smoothed = values
+            return
+        }
+
+        if smoothed.count != values.count {
+            smoothed = Array(repeating: Float.zero, count: values.count)
+        }
+
+        let radius = windowSize / 2
+        for index in values.indices {
+            let lower = max(0, index - radius)
+            let upper = min(values.count - 1, index + radius)
+            var sum: Float = 0
+            for valueIndex in lower...upper {
+                sum += values[valueIndex]
+            }
+            smoothed[index] = sum / Float(upper - lower + 1)
+        }
     }
 }
 
