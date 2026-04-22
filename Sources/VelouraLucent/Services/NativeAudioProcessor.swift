@@ -131,6 +131,7 @@ struct NativeAudioProcessor {
         collectsBenchmark: Bool
     ) throws -> NativeAudioProcessingBenchmark {
         let benchmarkRecorder = collectsBenchmark ? AudioProcessingBenchmarkRecorder() : nil
+        let totalStart = DispatchTime.now().uptimeNanoseconds
 
         logger?.log("入力音声を読み込みます")
         let signal = try measure("loadAudio", label: "読み込み", recorder: benchmarkRecorder, logger: logger) {
@@ -180,9 +181,7 @@ struct NativeAudioProcessor {
         try measure("saveAudio", label: "書き出し", recorder: benchmarkRecorder, logger: logger) {
             try AudioFileService.saveAudio(finalized, to: outputFile)
         }
-        if let benchmarkRecorder {
-            logger?.log("合計: \(formatProcessingDuration(benchmarkRecorder.stages.reduce(0) { $0 + $1.durationSeconds }))")
-        }
+        logger?.log("合計: \(formatProcessingDuration(durationSeconds(since: totalStart)))")
         logger?.log("処理が完了しました")
 
         return NativeAudioProcessingBenchmark(stages: benchmarkRecorder?.stages ?? [])

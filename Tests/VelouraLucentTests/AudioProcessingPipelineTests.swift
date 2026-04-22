@@ -81,6 +81,7 @@ struct AudioProcessingPipelineTests {
 
         #expect(FileManager.default.fileExists(atPath: output.path()))
         #expect(logs.values.contains("解析モード: 自動 -> \(AudioAnalysisMode.auto.resolvedMode.title)"))
+        #expect(logs.values.contains { $0.hasPrefix("合計: ") && $0.hasSuffix("秒") })
     }
 
     @Test
