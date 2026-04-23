@@ -174,7 +174,7 @@ struct NativeAudioProcessor {
 
         logger?.log("最終音量を整えます")
         let finalized = measure("loudnessFinalize", label: "最終音量", recorder: benchmarkRecorder, logger: logger) {
-            LoudnessProcessor().process(signal: shaped)
+            LoudnessProcessor().process(signal: shaped, referenceSignal: signal)
         }
 
         logger?.log("処理済みファイルを書き出します")
@@ -767,9 +767,15 @@ private struct LoudnessProcessor {
     let peakLimitDB: Float = -1
     let limiterReleaseMs: Float = 120
 
-    func process(signal: AudioSignal) -> AudioSignal {
+    func process(signal: AudioSignal, referenceSignal: AudioSignal? = nil) -> AudioSignal {
         let peakLimit = powf(10, peakLimitDB / 20)
         var channels = applyLinkedLimiter(signal.channels, peakLimit: peakLimit, sampleRate: signal.sampleRate)
+        channels = restoreReferenceLoudnessIfNeeded(
+            channels,
+            sampleRate: signal.sampleRate,
+            referenceSignal: referenceSignal,
+            peakLimit: peakLimit
+        )
 
         let peak = approximateTruePeak(channels: channels)
         if peak > peakLimit {
@@ -777,6 +783,27 @@ private struct LoudnessProcessor {
             channels = channels.map { $0.map { $0 * trim } }
         }
         return AudioSignal(channels: channels, sampleRate: signal.sampleRate)
+    }
+
+    private func restoreReferenceLoudnessIfNeeded(
+        _ channels: [[Float]],
+        sampleRate: Double,
+        referenceSignal: AudioSignal?,
+        peakLimit: Float
+    ) -> [[Float]] {
+        guard let referenceSignal else { return channels }
+        let referenceLoudness = MasteringAnalysisService.integratedLoudness(signal: referenceSignal)
+        let currentSignal = AudioSignal(channels: channels, sampleRate: sampleRate)
+        let currentLoudness = MasteringAnalysisService.integratedLoudness(signal: currentSignal)
+        guard referenceLoudness.isFinite, currentLoudness.isFinite, currentLoudness < referenceLoudness else {
+            return channels
+        }
+
+        let gain = powf(10, (referenceLoudness - currentLoudness) / 20)
+        let boosted = channels.map { channel in
+            channel.map { $0 * gain }
+        }
+        return applyLinkedLimiter(boosted, peakLimit: peakLimit, sampleRate: sampleRate)
     }
 
     private func applyLinkedLimiter(_ channels: [[Float]], peakLimit: Float, sampleRate: Double) -> [[Float]] {

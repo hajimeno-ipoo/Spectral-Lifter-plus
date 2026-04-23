@@ -85,6 +85,28 @@ struct AudioProcessingPipelineTests {
     }
 
     @Test
+    func correctionKeepsIntegratedLoudnessNearInput() async throws {
+        let tempDirectory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        let inputURL = tempDirectory.appending(path: "loudness-reference.wav")
+
+        try makeTestTone(at: inputURL, duration: 3)
+
+        let output = try await AudioProcessingService().process(
+            inputFile: inputURL,
+            denoiseStrength: .balanced,
+            analysisMode: .cpu
+        ) { _ in }
+
+        let inputSignal = try AudioFileService.loadAudio(from: inputURL)
+        let correctedSignal = try AudioFileService.loadAudio(from: output)
+        let inputLoudness = MasteringAnalysisService.integratedLoudness(signal: inputSignal)
+        let correctedLoudness = MasteringAnalysisService.integratedLoudness(signal: correctedSignal)
+
+        #expect(correctedLoudness + 0.05 >= inputLoudness)
+    }
+
+    @Test
     func outputURLsUseWavEvenWhenInputExtensionIsCompressed() {
         let inputURL = URL(fileURLWithPath: "/tmp/demo-track.mp3")
 
