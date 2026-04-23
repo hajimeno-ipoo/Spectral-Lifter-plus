@@ -67,7 +67,7 @@ struct MasteringAnalysisServiceTests {
         #expect(analysis.midBandLevelDB == reference.midBandLevelDB)
         #expect(analysis.highBandLevelDB == reference.highBandLevelDB)
         #expect(analysis.harshnessScore == reference.harshnessScore)
-        #expect(analysis.stereoWidth == reference.stereoWidth)
+        expectClose(analysis.stereoWidth, reference.stereoWidth, tolerance: 0.00001)
     }
 
     @Test
@@ -129,6 +129,23 @@ struct MasteringAnalysisServiceTests {
         ]
 
         #expect(MasteringAnalysisService.approximateTruePeak(channels) == referenceTruePeak(channels))
+    }
+
+    @Test
+    func stereoWidthMatchesReferenceImplementation() {
+        let signal = AudioSignal(
+            channels: [
+                [0.10, -0.05, 0.08, -0.03, 0.02, 0.01],
+                [0.09, -0.04, 0.05, -0.01, 0.03, -0.02]
+            ],
+            sampleRate: 48_000
+        )
+
+        expectClose(
+            MasteringAnalysisService.stereoWidth(for: signal),
+            referenceStereoWidth(signal: signal),
+            tolerance: 0.000001
+        )
     }
 
     private func benchmarkReport(for benchmark: MasteringAnalysisService.Benchmark) -> String {
@@ -258,8 +275,25 @@ struct MasteringAnalysisServiceTests {
             midBandLevelDB: spectralSummary.midBandLevelDB,
             highBandLevelDB: spectralSummary.highBandLevelDB,
             harshnessScore: spectralSummary.harshnessScore,
-            stereoWidth: MasteringAnalysisService.stereoWidth(for: signal)
+            stereoWidth: referenceStereoWidth(signal: signal)
         )
+    }
+
+    private func referenceStereoWidth(signal: AudioSignal) -> Float {
+        guard signal.channels.count >= 2 else { return 0 }
+        let left = signal.channels[0]
+        let right = signal.channels[1]
+        let count = min(left.count, right.count)
+        guard count > 0 else { return 0 }
+        var midEnergy: Float = 0
+        var sideEnergy: Float = 0
+        for index in 0..<count {
+            let mid = (left[index] + right[index]) * 0.5
+            let side = (left[index] - right[index]) * 0.5
+            midEnergy += mid * mid
+            sideEnergy += side * side
+        }
+        return min(2.0, sqrt(sideEnergy / max(midEnergy, 1e-9)))
     }
 
     private func referenceIntegratedLoudness(mono: [Float], sampleRate: Double) -> Float {

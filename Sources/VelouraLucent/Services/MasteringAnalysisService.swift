@@ -204,14 +204,20 @@ enum MasteringAnalysisService {
         let right = signal.channels[1]
         let count = min(left.count, right.count)
         guard count > 0 else { return 0 }
-        var midEnergy: Float = 0
-        var sideEnergy: Float = 0
-        for index in 0..<count {
-            let mid = (left[index] + right[index]) * 0.5
-            let side = (left[index] - right[index]) * 0.5
-            midEnergy += mid * mid
-            sideEnergy += side * side
+        var leftEnergy: Float = 0
+        var rightEnergy: Float = 0
+        var crossEnergy: Float = 0
+        left.withUnsafeBufferPointer { leftBuffer in
+            right.withUnsafeBufferPointer { rightBuffer in
+                guard let leftBase = leftBuffer.baseAddress, let rightBase = rightBuffer.baseAddress else { return }
+                vDSP_svesq(leftBase, 1, &leftEnergy, vDSP_Length(count))
+                vDSP_svesq(rightBase, 1, &rightEnergy, vDSP_Length(count))
+                vDSP_dotpr(leftBase, 1, rightBase, 1, &crossEnergy, vDSP_Length(count))
+            }
         }
+        let totalEnergy = leftEnergy + rightEnergy
+        let midEnergy = max((totalEnergy + 2 * crossEnergy) * 0.25, 0)
+        let sideEnergy = max((totalEnergy - 2 * crossEnergy) * 0.25, 0)
         return min(2.0, sqrt(sideEnergy / max(midEnergy, 1e-9)))
     }
 
