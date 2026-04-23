@@ -104,7 +104,11 @@ enum MasteringAnalysisService {
     }
 
     static func approximateTruePeak(_ channels: [[Float]]) -> Float {
-        channels.map(oversampledPeak).max() ?? 0
+        var peak: Float = 0
+        for channel in channels {
+            peak = max(peak, oversampledPeak(channel))
+        }
+        return peak
     }
 
     private struct SpectralSummary {
@@ -232,22 +236,33 @@ enum MasteringAnalysisService {
 
     private static func oversampledPeak(_ channel: [Float]) -> Float {
         guard channel.count > 1 else { return channel.map { abs($0) }.max() ?? 0 }
-        var peak: Float = 0
-        for index in 0..<(channel.count - 1) {
-            let p0 = index > 0 ? channel[index - 1] : channel[index]
-            let p1 = channel[index]
-            let p2 = channel[index + 1]
-            let p3 = index + 2 < channel.count ? channel[index + 2] : p2
-            peak = max(peak, abs(p1))
-            for step in 1...7 {
-                let t = Float(step) / 8
-                peak = max(peak, abs(catmullRom(p0: p0, p1: p1, p2: p2, p3: p3, t: t)))
+        return channel.withUnsafeBufferPointer { buffer in
+            guard let samples = buffer.baseAddress else { return 0 }
+            let sampleCount = buffer.count
+            var peak = abs(samples[0])
+            var index = 0
+
+            while index < sampleCount - 1 {
+                let p0 = index > 0 ? samples[index - 1] : samples[index]
+                let p1 = samples[index]
+                let p2 = samples[index + 1]
+                let p3 = index + 2 < sampleCount ? samples[index + 2] : p2
+                peak = max(peak, abs(p1))
+                peak = max(peak, abs(catmullRom(p0: p0, p1: p1, p2: p2, p3: p3, t: 0.125)))
+                peak = max(peak, abs(catmullRom(p0: p0, p1: p1, p2: p2, p3: p3, t: 0.25)))
+                peak = max(peak, abs(catmullRom(p0: p0, p1: p1, p2: p2, p3: p3, t: 0.375)))
+                peak = max(peak, abs(catmullRom(p0: p0, p1: p1, p2: p2, p3: p3, t: 0.5)))
+                peak = max(peak, abs(catmullRom(p0: p0, p1: p1, p2: p2, p3: p3, t: 0.625)))
+                peak = max(peak, abs(catmullRom(p0: p0, p1: p1, p2: p2, p3: p3, t: 0.75)))
+                peak = max(peak, abs(catmullRom(p0: p0, p1: p1, p2: p2, p3: p3, t: 0.875)))
+                index += 1
             }
+            peak = max(peak, abs(samples[sampleCount - 1]))
+            return peak
         }
-        peak = max(peak, abs(channel[channel.count - 1]))
-        return peak
     }
 
+    @inline(__always)
     private static func catmullRom(p0: Float, p1: Float, p2: Float, p3: Float, t: Float) -> Float {
         let t2 = t * t
         let t3 = t2 * t

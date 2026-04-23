@@ -49,6 +49,16 @@ struct MasteringAnalysisServiceTests {
         try report.write(to: reportURL, atomically: true, encoding: .utf8)
     }
 
+    @Test
+    func approximateTruePeakMatchesReferenceInterpolation() {
+        let channels: [[Float]] = [
+            [0, 0.12, -0.37, 0.52, -0.18, 0.04, -0.09],
+            [0.08, -0.16, 0.24, -0.31, 0.18, -0.02, 0.01]
+        ]
+
+        #expect(MasteringAnalysisService.approximateTruePeak(channels) == referenceTruePeak(channels))
+    }
+
     private func benchmarkReport(for benchmark: MasteringAnalysisService.Benchmark) -> String {
         var lines = ["MasteringAnalysisService benchmark"]
         for stage in benchmark.stages {
@@ -56,6 +66,39 @@ struct MasteringAnalysisServiceTests {
         }
         lines.append("total: \(String(format: "%.6f", benchmark.totalDurationSeconds))s")
         return lines.joined(separator: "\n")
+    }
+
+    private func referenceTruePeak(_ channels: [[Float]]) -> Float {
+        channels.map(referenceOversampledPeak).max() ?? 0
+    }
+
+    private func referenceOversampledPeak(_ channel: [Float]) -> Float {
+        guard channel.count > 1 else { return channel.map { abs($0) }.max() ?? 0 }
+        var peak: Float = 0
+        for index in 0..<(channel.count - 1) {
+            let p0 = index > 0 ? channel[index - 1] : channel[index]
+            let p1 = channel[index]
+            let p2 = channel[index + 1]
+            let p3 = index + 2 < channel.count ? channel[index + 2] : p2
+            peak = max(peak, abs(p1))
+            for step in 1...7 {
+                let t = Float(step) / 8
+                peak = max(peak, abs(referenceCatmullRom(p0: p0, p1: p1, p2: p2, p3: p3, t: t)))
+            }
+        }
+        peak = max(peak, abs(channel[channel.count - 1]))
+        return peak
+    }
+
+    private func referenceCatmullRom(p0: Float, p1: Float, p2: Float, p3: Float, t: Float) -> Float {
+        let t2 = t * t
+        let t3 = t2 * t
+        return 0.5 * (
+            (2 * p1)
+                + (-p0 + p2) * t
+                + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2
+                + (-p0 + 3 * p1 - 3 * p2 + p3) * t3
+        )
     }
 
     private func makeStereoTone(at url: URL) throws {
