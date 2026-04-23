@@ -50,6 +50,27 @@ struct MasteringAnalysisServiceTests {
     }
 
     @Test
+    func masteringAnalysisMatchesReferenceImplementation() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        let fileURL = tempDirectory.appending(path: "mastering-analysis-reference.wav")
+
+        try makeStereoTone(at: fileURL)
+
+        let signal = try AudioFileService.loadAudio(from: fileURL)
+        let analysis = MasteringAnalysisService.analyze(signal: signal)
+        let reference = referenceAnalysis(signal: signal)
+
+        #expect(analysis.integratedLoudness == reference.integratedLoudness)
+        #expect(analysis.truePeakDBFS == reference.truePeakDBFS)
+        #expect(analysis.lowBandLevelDB == reference.lowBandLevelDB)
+        #expect(analysis.midBandLevelDB == reference.midBandLevelDB)
+        #expect(analysis.highBandLevelDB == reference.highBandLevelDB)
+        #expect(analysis.harshnessScore == reference.harshnessScore)
+        #expect(analysis.stereoWidth == reference.stereoWidth)
+    }
+
+    @Test
     func recordsRealAudioMasteringAnalysisBenchmark() throws {
         guard ProcessInfo.processInfo.environment["VELOURA_RUN_REAL_AUDIO_BENCHMARK"] == "1" else {
             return
@@ -148,6 +169,142 @@ struct MasteringAnalysisServiceTests {
         )
     }
 
+    private func referenceAnalysis(signal: AudioSignal) -> MasteringAnalysis {
+        let mono = signal.monoMixdown()
+        let spectrogram = SpectralDSP.stft(mono)
+        let spectralSummary = referenceSpectralSummary(for: spectrogram, sampleRate: signal.sampleRate)
+        let truePeak = referenceTruePeak(signal.channels)
+        return MasteringAnalysis(
+            integratedLoudness: referenceIntegratedLoudness(mono: mono, sampleRate: signal.sampleRate),
+            truePeakDBFS: 20 * log10(max(Double(truePeak), 1e-12)),
+            lowBandLevelDB: spectralSummary.lowBandLevelDB,
+            midBandLevelDB: spectralSummary.midBandLevelDB,
+            highBandLevelDB: spectralSummary.highBandLevelDB,
+            harshnessScore: spectralSummary.harshnessScore,
+            stereoWidth: MasteringAnalysisService.stereoWidth(for: signal)
+        )
+    }
+
+    private func referenceIntegratedLoudness(mono: [Float], sampleRate: Double) -> Float {
+        let weighted = referenceKWeight(mono, sampleRate: sampleRate)
+        let energyPrefix = referenceEnergyPrefix(for: weighted)
+        let sampleCount = max(energyPrefix.count - 1, 0)
+        guard sampleCount > 0 else { return -70 }
+
+        let windowSize = max(Int(sampleRate * 0.4), 1)
+        let hopSize = max(Int(sampleRate * 0.1), 1)
+        var blockLoudness: [Float] = []
+        var start = 0
+
+        while start < sampleCount {
+            let end = min(sampleCount, start + windowSize)
+            let rms = sqrt(max(referenceMeanSquare(in: energyPrefix, start: start, end: end), 1e-9))
+            blockLoudness.append(20 * log10f(rms))
+            start += hopSize
+        }
+
+        let absoluteGated = blockLoudness.filter { $0 > -70 }
+        guard !absoluteGated.isEmpty else { return -70 }
+        let preliminary = referenceEnergyAverage(absoluteGated)
+        let relativeGate = preliminary - 10
+        let relativeGated = absoluteGated.filter { $0 >= relativeGate }
+        return referenceEnergyAverage(relativeGated.isEmpty ? absoluteGated : relativeGated)
+    }
+
+    private func referenceKWeight(_ signal: [Float], sampleRate: Double) -> [Float] {
+        let highPassed = SpectralDSP.highPass(signal, cutoff: 60, sampleRate: sampleRate)
+        let shelfBase = SpectralDSP.highPass(signal, cutoff: 1_500, sampleRate: sampleRate)
+        return zip(highPassed, shelfBase).map { $0 + $1 * 0.25 }
+    }
+
+    private func referenceEnergyAverage(_ loudnessValues: [Float]) -> Float {
+        let meanEnergy = loudnessValues.map { powf(10, $0 / 10) }.reduce(0, +) / Float(max(loudnessValues.count, 1))
+        return 10 * log10f(max(meanEnergy, 1e-9))
+    }
+
+    private func referenceEnergyPrefix(for values: [Float]) -> [Float] {
+        var prefix = Array(repeating: Float.zero, count: values.count + 1)
+        for index in values.indices {
+            prefix[index + 1] = prefix[index] + values[index] * values[index]
+        }
+        return prefix
+    }
+
+    private func referenceMeanSquare(in prefix: [Float], start: Int, end: Int) -> Float {
+        guard start < end, start >= 0, end < prefix.count else { return 0 }
+        return (prefix[end] - prefix[start]) / Float(max(end - start, 1))
+    }
+
+    private func referenceSpectralSummary(for spectrogram: Spectrogram, sampleRate: Double) -> ReferenceSpectralSummary {
+        guard spectrogram.frameCount > 0 else {
+            return ReferenceSpectralSummary(lowBandLevelDB: -120, midBandLevelDB: -120, highBandLevelDB: -120, harshnessScore: 0)
+        }
+
+        let frequencyStep = sampleRate / Double(spectrogram.fftSize)
+        let lowRange = referenceBinRange(20...180, frequencyStep: frequencyStep, binCount: spectrogram.binCount)
+        let midRange = referenceBinRange(180...5_000, frequencyStep: frequencyStep, binCount: spectrogram.binCount)
+        let highRange = referenceBinRange(5_000...20_000, frequencyStep: frequencyStep, binCount: spectrogram.binCount)
+        let harshUpperMidRange = referenceBinRange(3_000...8_000, frequencyStep: frequencyStep, binCount: spectrogram.binCount)
+        let harshAirRange = referenceBinRange(12_000...(sampleRate * 0.5), frequencyStep: frequencyStep, binCount: spectrogram.binCount)
+
+        var lowEnergy: Float = 0
+        var midEnergy: Float = 0
+        var highEnergy: Float = 0
+        var harshUpperMid: Float = 0
+        var harshAir: Float = 0
+        var lowCount = 0
+        var midCount = 0
+        var highCount = 0
+
+        for frameIndex in 0..<spectrogram.frameCount {
+            referenceAccumulateBandEnergy(spectrogram: spectrogram, frameIndex: frameIndex, range: lowRange, energy: &lowEnergy, count: &lowCount)
+            referenceAccumulateBandEnergy(spectrogram: spectrogram, frameIndex: frameIndex, range: midRange, energy: &midEnergy, count: &midCount)
+            referenceAccumulateBandEnergy(spectrogram: spectrogram, frameIndex: frameIndex, range: highRange, energy: &highEnergy, count: &highCount)
+            harshUpperMid += referenceMagnitudeSum(spectrogram: spectrogram, frameIndex: frameIndex, range: harshUpperMidRange)
+            harshAir += referenceMagnitudeSum(spectrogram: spectrogram, frameIndex: frameIndex, range: harshAirRange)
+        }
+
+        return ReferenceSpectralSummary(
+            lowBandLevelDB: referenceBandLevelDB(energy: lowEnergy, count: lowCount),
+            midBandLevelDB: referenceBandLevelDB(energy: midEnergy, count: midCount),
+            highBandLevelDB: referenceBandLevelDB(energy: highEnergy, count: highCount),
+            harshnessScore: min(1.0, harshUpperMid / max(harshUpperMid + harshAir, 1e-6))
+        )
+    }
+
+    private func referenceBinRange(_ range: ClosedRange<Double>, frequencyStep: Double, binCount: Int) -> ReferenceBinRange {
+        let lower = max(0, min(Int(range.lowerBound / frequencyStep), binCount - 1))
+        let upper = max(lower, min(Int(range.upperBound / frequencyStep), binCount - 1))
+        return ReferenceBinRange(lower: lower, upperInclusive: upper)
+    }
+
+    private func referenceAccumulateBandEnergy(
+        spectrogram: Spectrogram,
+        frameIndex: Int,
+        range: ReferenceBinRange,
+        energy: inout Float,
+        count: inout Int
+    ) {
+        for binIndex in range.lower...range.upperInclusive {
+            let magnitude = spectrogram.magnitude(frameIndex: frameIndex, binIndex: binIndex)
+            energy += magnitude * magnitude
+            count += 1
+        }
+    }
+
+    private func referenceMagnitudeSum(spectrogram: Spectrogram, frameIndex: Int, range: ReferenceBinRange) -> Float {
+        var sum: Float = 0
+        for binIndex in range.lower...range.upperInclusive {
+            sum += spectrogram.magnitude(frameIndex: frameIndex, binIndex: binIndex)
+        }
+        return sum
+    }
+
+    private func referenceBandLevelDB(energy: Float, count: Int) -> Double {
+        let rms = sqrt(max(energy / Float(max(count, 1)), 1e-12))
+        return 20 * log10(max(Double(rms), 1e-12))
+    }
+
     private func makeStereoTone(at url: URL) throws {
         let sampleRate = 48_000.0
         let frameCount = Int(sampleRate * 2)
@@ -168,5 +325,17 @@ struct MasteringAnalysisServiceTests {
             settings: AudioFileService.interleavedFileSettings(sampleRate: sampleRate, channels: 2)
         )
         try file.write(from: buffer)
+    }
+
+    private struct ReferenceSpectralSummary {
+        let lowBandLevelDB: Double
+        let midBandLevelDB: Double
+        let highBandLevelDB: Double
+        let harshnessScore: Float
+    }
+
+    private struct ReferenceBinRange {
+        let lower: Int
+        let upperInclusive: Int
     }
 }

@@ -78,8 +78,7 @@ enum MasteringAnalysisService {
     }
 
     private static func integratedLoudness(mono: [Float], sampleRate: Double) -> Float {
-        let weighted = kWeight(mono, sampleRate: sampleRate)
-        let energyPrefix = energyPrefix(for: weighted)
+        let energyPrefix = kWeightedEnergyPrefix(mono, sampleRate: sampleRate)
         let sampleCount = max(energyPrefix.count - 1, 0)
         guard sampleCount > 0 else { return -70 }
 
@@ -95,12 +94,14 @@ enum MasteringAnalysisService {
             start += hopSize
         }
 
-        let absoluteGated = blockLoudness.filter { $0 > -70 }
-        guard !absoluteGated.isEmpty else { return -70 }
-        let preliminary = energyAverage(absoluteGated)
+        let absolute = loudnessEnergySum(blockLoudness, gate: -70)
+        guard absolute.count > 0 else { return -70 }
+        let preliminary = energyAverage(energySum: absolute.energy, count: absolute.count)
         let relativeGate = preliminary - 10
-        let relativeGated = absoluteGated.filter { $0 >= relativeGate }
-        return energyAverage(relativeGated.isEmpty ? absoluteGated : relativeGated)
+        let relative = relativeLoudnessEnergySum(blockLoudness, gate: relativeGate)
+        return relative.count > 0
+            ? energyAverage(energySum: relative.energy, count: relative.count)
+            : energyAverage(energySum: absolute.energy, count: absolute.count)
     }
 
     static func approximateTruePeak(_ channels: [[Float]]) -> Float {
@@ -121,6 +122,10 @@ enum MasteringAnalysisService {
     private struct BinRange {
         let lower: Int
         let upperInclusive: Int
+
+        func contains(_ binIndex: Int) -> Bool {
+            binIndex >= lower && binIndex <= upperInclusive
+        }
     }
 
     private static func spectralSummary(for spectrogram: Spectrogram, sampleRate: Double) -> SpectralSummary {
@@ -144,12 +149,45 @@ enum MasteringAnalysisService {
         var midCount = 0
         var highCount = 0
 
+        let maxBin = max(
+            lowRange.upperInclusive,
+            midRange.upperInclusive,
+            highRange.upperInclusive,
+            harshUpperMidRange.upperInclusive,
+            harshAirRange.upperInclusive
+        )
         for frameIndex in 0..<spectrogram.frameCount {
-            accumulateBandEnergy(spectrogram: spectrogram, frameIndex: frameIndex, range: lowRange, energy: &lowEnergy, count: &lowCount)
-            accumulateBandEnergy(spectrogram: spectrogram, frameIndex: frameIndex, range: midRange, energy: &midEnergy, count: &midCount)
-            accumulateBandEnergy(spectrogram: spectrogram, frameIndex: frameIndex, range: highRange, energy: &highEnergy, count: &highCount)
-            harshUpperMid += magnitudeSum(spectrogram: spectrogram, frameIndex: frameIndex, range: harshUpperMidRange)
-            harshAir += magnitudeSum(spectrogram: spectrogram, frameIndex: frameIndex, range: harshAirRange)
+            let frameStart = frameIndex * spectrogram.binCount
+            var frameHarshUpperMid: Float = 0
+            var frameHarshAir: Float = 0
+
+            for binIndex in 0...maxBin {
+                let storageIndex = frameStart + binIndex
+                let magnitude = hypotf(spectrogram.real[storageIndex], spectrogram.imag[storageIndex])
+                let energy = magnitude * magnitude
+
+                if lowRange.contains(binIndex) {
+                    lowEnergy += energy
+                    lowCount += 1
+                }
+                if midRange.contains(binIndex) {
+                    midEnergy += energy
+                    midCount += 1
+                }
+                if highRange.contains(binIndex) {
+                    highEnergy += energy
+                    highCount += 1
+                }
+                if harshUpperMidRange.contains(binIndex) {
+                    frameHarshUpperMid += magnitude
+                }
+                if harshAirRange.contains(binIndex) {
+                    frameHarshAir += magnitude
+                }
+            }
+
+            harshUpperMid += frameHarshUpperMid
+            harshAir += frameHarshAir
         }
 
         return SpectralSummary(
@@ -177,15 +215,50 @@ enum MasteringAnalysisService {
         return min(2.0, sqrt(sideEnergy / max(midEnergy, 1e-9)))
     }
 
-    private static func energyAverage(_ loudnessValues: [Float]) -> Float {
-        let meanEnergy = loudnessValues.map { powf(10, $0 / 10) }.reduce(0, +) / Float(max(loudnessValues.count, 1))
+    private static func energyAverage(energySum: Float, count: Int) -> Float {
+        let meanEnergy = energySum / Float(max(count, 1))
         return 10 * log10f(max(meanEnergy, 1e-9))
     }
 
-    private static func energyPrefix(for values: [Float]) -> [Float] {
-        var prefix = Array(repeating: Float.zero, count: values.count + 1)
-        for index in values.indices {
-            prefix[index + 1] = prefix[index] + values[index] * values[index]
+    private static func loudnessEnergySum(_ loudnessValues: [Float], gate: Float) -> (energy: Float, count: Int) {
+        var energy: Float = 0
+        var count = 0
+        for loudness in loudnessValues where loudness > gate {
+            energy += powf(10, loudness / 10)
+            count += 1
+        }
+        return (energy, count)
+    }
+
+    private static func relativeLoudnessEnergySum(_ loudnessValues: [Float], gate: Float) -> (energy: Float, count: Int) {
+        var energy: Float = 0
+        var count = 0
+        for loudness in loudnessValues where loudness > -70 && loudness >= gate {
+            energy += powf(10, loudness / 10)
+            count += 1
+        }
+        return (energy, count)
+    }
+
+    private static func kWeightedEnergyPrefix(_ signal: [Float], sampleRate: Double) -> [Float] {
+        guard !signal.isEmpty else { return [0] }
+        let rc60 = 1.0 / (2.0 * Double.pi * 60)
+        let rc1500 = 1.0 / (2.0 * Double.pi * 1_500)
+        let dt = 1.0 / sampleRate
+        let alpha60 = Float(rc60 / (rc60 + dt))
+        let alpha1500 = Float(rc1500 / (rc1500 + dt))
+        var prefix = Array(repeating: Float.zero, count: signal.count + 1)
+        var high60 = signal[0]
+        var high1500 = signal[0]
+        let firstWeighted = high60 + high1500 * 0.25
+        prefix[1] = firstWeighted * firstWeighted
+
+        guard signal.count > 1 else { return prefix }
+        for index in 1..<signal.count {
+            high60 = alpha60 * (high60 + signal[index] - signal[index - 1])
+            high1500 = alpha1500 * (high1500 + signal[index] - signal[index - 1])
+            let weighted = high60 + high1500 * 0.25
+            prefix[index + 1] = prefix[index] + weighted * weighted
         }
         return prefix
     }
@@ -201,37 +274,9 @@ enum MasteringAnalysisService {
         return BinRange(lower: lower, upperInclusive: upper)
     }
 
-    private static func accumulateBandEnergy(
-        spectrogram: Spectrogram,
-        frameIndex: Int,
-        range: BinRange,
-        energy: inout Float,
-        count: inout Int
-    ) {
-        for binIndex in range.lower...range.upperInclusive {
-            let magnitude = spectrogram.magnitude(frameIndex: frameIndex, binIndex: binIndex)
-            energy += magnitude * magnitude
-            count += 1
-        }
-    }
-
-    private static func magnitudeSum(spectrogram: Spectrogram, frameIndex: Int, range: BinRange) -> Float {
-        var sum: Float = 0
-        for binIndex in range.lower...range.upperInclusive {
-            sum += spectrogram.magnitude(frameIndex: frameIndex, binIndex: binIndex)
-        }
-        return sum
-    }
-
     private static func bandLevelDB(energy: Float, count: Int) -> Double {
         let rms = sqrt(max(energy / Float(max(count, 1)), 1e-12))
         return 20 * log10(max(Double(rms), 1e-12))
-    }
-
-    private static func kWeight(_ signal: [Float], sampleRate: Double) -> [Float] {
-        let highPassed = SpectralDSP.highPass(signal, cutoff: 60, sampleRate: sampleRate)
-        let shelfBase = SpectralDSP.highPass(signal, cutoff: 1_500, sampleRate: sampleRate)
-        return zip(highPassed, shelfBase).map { $0 + $1 * 0.25 }
     }
 
     private static func oversampledPeak(_ channel: [Float]) -> Float {
