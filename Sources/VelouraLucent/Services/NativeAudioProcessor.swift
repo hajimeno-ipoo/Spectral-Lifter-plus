@@ -152,7 +152,10 @@ struct NativeAudioProcessor {
                     brightnessRatio: analysis.brightnessRatio,
                     transientAmount: analysis.transientAmount,
                     cutoffFrequency: analysis.cutoffFrequency,
-                    noiseAmount: analysis.noiseAmount
+                    noiseAmount: analysis.noiseAmount,
+                    rolloffDepth: analysis.rolloffDepth,
+                    airBandEnergyRatio: analysis.airBandEnergyRatio,
+                    artifactBandRatio: analysis.artifactBandRatio
                 )
             )
         }
@@ -274,7 +277,19 @@ struct AudioAnalyzer {
         let mono = signal.monoMixdown()
         let spectrogram = SpectralDSP.stft(mono)
         guard spectrogram.frameCount > 0 else {
-            return AnalysisData(cutoffFrequency: 16_000, dominantHarmonics: [], harmonicConfidence: 0, hasShimmer: false, shimmerRatio: 0, brightnessRatio: 0, transientAmount: 0, noiseAmount: 0)
+            return AnalysisData(
+                cutoffFrequency: 16_000,
+                dominantHarmonics: [],
+                harmonicConfidence: 0,
+                hasShimmer: false,
+                shimmerRatio: 0,
+                brightnessRatio: 0,
+                transientAmount: 0,
+                noiseAmount: 0,
+                rolloffDepth: 0,
+                airBandEnergyRatio: 0,
+                artifactBandRatio: 0
+            )
         }
 
         let separatedSpectrum = separatedMeanSpectra(spectrogram: spectrogram)
@@ -319,12 +334,18 @@ struct AudioAnalyzer {
         let shimmerEnd = min(Int(14_000 / frequencyStep), meanSpectrum.count - 1)
         let shimmerEnergy = meanSpectrum[shimmerStart...shimmerEnd].reduce(0, +)
         let bodyEnergy = meanSpectrum[0...min(200, meanSpectrum.count - 1)].reduce(0, +)
+        let preRolloffEnergy = bandAverage(meanSpectrum, frequencyStep: frequencyStep, lower: 8_000, upper: 12_000)
+        let postRolloffEnergy = bandAverage(meanSpectrum, frequencyStep: frequencyStep, lower: 16_000, upper: min(20_000, signal.sampleRate * 0.5))
         let upperBandStart = min(Int(16_000 / frequencyStep), meanSpectrum.count - 1)
         let upperBandEnergy = meanSpectrum[upperBandStart...(meanSpectrum.count - 1)].reduce(0, +)
+        let artifactEnergy = bandEnergy(meanSpectrum, frequencyStep: frequencyStep, lower: 18_000, upper: signal.sampleRate * 0.5)
         let centroid = SpectralDSP.spectralCentroid(meanSpectrum, sampleRate: signal.sampleRate, fftSize: spectrogram.fftSize)
         let brightnessRatio = Float(centroid / max(signal.sampleRate * 0.5, 1))
         let transientAmount = estimateTransientAmount(mono)
         let shimmerRatio = shimmerEnergy / max(bodyEnergy + upperBandEnergy, 1e-6)
+        let rolloffDepth = min(1.0, max(0, (20 * log10f(max(preRolloffEnergy, 1e-6) / max(postRolloffEnergy, 1e-6))) / 24))
+        let airBandEnergyRatio = min(1.0, upperBandEnergy / max(bodyEnergy + upperBandEnergy, 1e-6))
+        let artifactBandRatio = min(1.0, artifactEnergy / max(bodyEnergy + upperBandEnergy, 1e-6))
         let harmonicConfidence = min(1.2, harmonicSupport / max(harmonicSupport + percussiveSpectrum[harmonicStart...harmonicEnd].reduce(0, +), 1e-6))
         let noiseAmount = estimateNoiseAmount(
             percussiveSpectrum: percussiveSpectrum,
@@ -340,8 +361,27 @@ struct AudioAnalyzer {
             shimmerRatio: shimmerRatio,
             brightnessRatio: brightnessRatio,
             transientAmount: transientAmount,
-            noiseAmount: noiseAmount
+            noiseAmount: noiseAmount,
+            rolloffDepth: rolloffDepth,
+            airBandEnergyRatio: airBandEnergyRatio,
+            artifactBandRatio: artifactBandRatio
         )
+    }
+
+    private func bandEnergy(_ spectrum: [Float], frequencyStep: Double, lower: Double, upper: Double) -> Float {
+        guard !spectrum.isEmpty, frequencyStep > 0 else { return 0 }
+        let start = min(max(Int(lower / frequencyStep), 0), spectrum.count - 1)
+        let end = min(max(Int(upper / frequencyStep), start), spectrum.count - 1)
+        guard end >= start else { return 0 }
+        return spectrum[start...end].reduce(0, +)
+    }
+
+    private func bandAverage(_ spectrum: [Float], frequencyStep: Double, lower: Double, upper: Double) -> Float {
+        guard !spectrum.isEmpty, frequencyStep > 0 else { return 0 }
+        let start = min(max(Int(lower / frequencyStep), 0), spectrum.count - 1)
+        let end = min(max(Int(upper / frequencyStep), start), spectrum.count - 1)
+        guard end >= start else { return 0 }
+        return spectrum[start...end].reduce(0, +) / Float(end - start + 1)
     }
 
     private func separatedMeanSpectra(spectrogram: Spectrogram) -> AudioSeparatedMeanSpectra {
@@ -766,6 +806,7 @@ private struct HarmonicUpscaler: Sendable {
 private struct LoudnessProcessor {
     let peakLimitDB: Float = -1
     let limiterReleaseMs: Float = 120
+    let referenceLoudnessMarginLU: Float = 0.3
 
     func process(signal: AudioSignal, referenceSignal: AudioSignal? = nil) -> AudioSignal {
         let peakLimit = powf(10, peakLimitDB / 20)
@@ -792,14 +833,14 @@ private struct LoudnessProcessor {
         peakLimit: Float
     ) -> [[Float]] {
         guard let referenceSignal else { return channels }
-        let referenceLoudness = MasteringAnalysisService.integratedLoudness(signal: referenceSignal)
+        let targetLoudness = MasteringAnalysisService.integratedLoudness(signal: referenceSignal) - referenceLoudnessMarginLU
         let currentSignal = AudioSignal(channels: channels, sampleRate: sampleRate)
         let currentLoudness = MasteringAnalysisService.integratedLoudness(signal: currentSignal)
-        guard referenceLoudness.isFinite, currentLoudness.isFinite, currentLoudness < referenceLoudness else {
+        guard targetLoudness.isFinite, currentLoudness.isFinite, currentLoudness < targetLoudness else {
             return channels
         }
 
-        let gain = powf(10, (referenceLoudness - currentLoudness) / 20)
+        let gain = powf(10, (targetLoudness - currentLoudness) / 20)
         let boosted = channels.map { channel in
             channel.map { $0 * gain }
         }

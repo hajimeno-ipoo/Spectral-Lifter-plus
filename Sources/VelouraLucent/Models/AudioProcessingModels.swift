@@ -72,6 +72,9 @@ struct AnalysisData: Sendable {
     let brightnessRatio: Float
     let transientAmount: Float
     let noiseAmount: Float
+    let rolloffDepth: Float
+    let airBandEnergyRatio: Float
+    let artifactBandRatio: Float
 }
 
 struct NeuralFoldoverFeatures: Sendable {
@@ -81,6 +84,9 @@ struct NeuralFoldoverFeatures: Sendable {
     let transientAmount: Float
     let cutoffFrequency: Double
     let noiseAmount: Float
+    let rolloffDepth: Float
+    let airBandEnergyRatio: Float
+    let artifactBandRatio: Float
 }
 
 struct NeuralFoldoverPrediction: Sendable, Equatable {

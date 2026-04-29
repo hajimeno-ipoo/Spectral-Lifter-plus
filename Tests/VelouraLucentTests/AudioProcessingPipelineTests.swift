@@ -103,7 +103,7 @@ struct AudioProcessingPipelineTests {
         let inputLoudness = MasteringAnalysisService.integratedLoudness(signal: inputSignal)
         let correctedLoudness = MasteringAnalysisService.integratedLoudness(signal: correctedSignal)
 
-        #expect(correctedLoudness + 0.05 >= inputLoudness)
+        #expect(abs((inputLoudness - correctedLoudness) - 0.3) <= 0.1)
     }
 
     @Test
