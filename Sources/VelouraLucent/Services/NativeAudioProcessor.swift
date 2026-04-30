@@ -465,11 +465,11 @@ private struct SpectralGateDenoiser: Sendable {
     private var tuning: DenoiseTuning {
         switch strength {
         case .gentle:
-            return DenoiseTuning(passes: 1, thresholdMultiplier: 1.28, lowBandFloor: 0.22, highBandFloor: 0.33, quietPercentile: 16, transientProtection: 0.28, granularReduction: 0.18)
+            return DenoiseTuning(passes: 1, thresholdMultiplier: 1.28, lowBandFloor: 0.22, highBandFloor: 0.33, quietPercentile: 16, transientProtection: 0.28, granularReduction: 0.18, shimmerStabilization: 0.08)
         case .balanced:
-            return DenoiseTuning(passes: 2, thresholdMultiplier: 1.46, lowBandFloor: 0.16, highBandFloor: 0.28, quietPercentile: 20, transientProtection: 0.22, granularReduction: 0.26)
+            return DenoiseTuning(passes: 2, thresholdMultiplier: 1.46, lowBandFloor: 0.16, highBandFloor: 0.28, quietPercentile: 20, transientProtection: 0.22, granularReduction: 0.26, shimmerStabilization: 0.13)
         case .strong:
-            return DenoiseTuning(passes: 3, thresholdMultiplier: 1.68, lowBandFloor: 0.11, highBandFloor: 0.22, quietPercentile: 26, transientProtection: 0.16, granularReduction: 0.34)
+            return DenoiseTuning(passes: 3, thresholdMultiplier: 1.68, lowBandFloor: 0.11, highBandFloor: 0.22, quietPercentile: 26, transientProtection: 0.16, granularReduction: 0.34, shimmerStabilization: 0.18)
         }
     }
 
@@ -477,17 +477,20 @@ private struct SpectralGateDenoiser: Sendable {
         let channels = mapChannelsConcurrently(signal.channels) { channel in
             var current = channel
             for _ in 0..<tuning.passes {
-                current = processPass(current)
+                current = processPass(current, sampleRate: signal.sampleRate)
             }
             return current
         }
         return AudioSignal(channels: channels, sampleRate: signal.sampleRate)
     }
 
-    private func processPass(_ channel: [Float]) -> [Float] {
+    private func processPass(_ channel: [Float], sampleRate: Double) -> [Float] {
         var spectrogram = SpectralDSP.stft(channel)
         guard spectrogram.frameCount > 0 else { return channel }
         let binCount = spectrogram.binCount
+        let frequencyStep = sampleRate / Double(spectrogram.fftSize)
+        let shimmerStartBin = min(max(Int(10_000 / frequencyStep), 0), binCount - 1)
+        let shimmerEndBin = min(max(Int(16_000 / frequencyStep), shimmerStartBin), binCount - 1)
         let coefficients = DenoiseMaskCoefficients(
             binCount: binCount,
             lowBandFloor: tuning.lowBandFloor,
@@ -557,13 +560,51 @@ private struct SpectralGateDenoiser: Sendable {
                     floor,
                     1 - min(0.72, granularExcess / max(magnitude + granularThreshold, 1e-6)) * tuning.granularReduction
                 )
-                let mask = min(1.0, max(rawMask, granularMask) + transientLift)
+                let shimmerMask = shimmerStabilizationMask(
+                    spectrogram: spectrogram,
+                    frameIndex: frameIndex,
+                    binIndex: binIndex,
+                    magnitude: magnitude,
+                    shimmerStartBin: shimmerStartBin,
+                    shimmerEndBin: shimmerEndBin,
+                    transientLift: transientLift
+                )
+                let denoiseMask = max(rawMask, granularMask)
+                let mask = min(1.0, max(floor, min(denoiseMask, shimmerMask)) + transientLift)
                 spectrogram.real[index] *= mask
                 spectrogram.imag[index] *= mask
             }
         }
 
         return SpectralDSP.istft(spectrogram)
+    }
+
+    private func shimmerStabilizationMask(
+        spectrogram: Spectrogram,
+        frameIndex: Int,
+        binIndex: Int,
+        magnitude: Float,
+        shimmerStartBin: Int,
+        shimmerEndBin: Int,
+        transientLift: Float
+    ) -> Float {
+        guard tuning.shimmerStabilization > 0 else { return 1 }
+        guard binIndex >= shimmerStartBin, binIndex <= shimmerEndBin else { return 1 }
+        guard frameIndex > 0, frameIndex + 1 < spectrogram.frameCount else { return 1 }
+
+        let previousIndex = spectrogram.storageIndex(frameIndex: frameIndex - 1, binIndex: binIndex)
+        let nextIndex = spectrogram.storageIndex(frameIndex: frameIndex + 1, binIndex: binIndex)
+        let previous = hypotf(spectrogram.real[previousIndex], spectrogram.imag[previousIndex])
+        let next = hypotf(spectrogram.real[nextIndex], spectrogram.imag[nextIndex])
+        let temporalAverage = (previous + next) * 0.5
+        let temporalExcessRatio = max(0, (magnitude - temporalAverage) / max(magnitude + temporalAverage, 1e-6))
+        guard temporalExcessRatio > 0 else { return 1 }
+
+        let bandPosition = Float(binIndex - shimmerStartBin) / Float(max(shimmerEndBin - shimmerStartBin, 1))
+        let bandWeight = 0.75 + sinf(bandPosition * .pi) * 0.25
+        let transientProtection = max(0.35, 1 - transientLift * 1.6)
+        let reduction = min(0.42, temporalExcessRatio * tuning.shimmerStabilization * bandWeight * transientProtection)
+        return 1 - reduction
     }
 }
 
@@ -612,6 +653,7 @@ private struct DenoiseTuning: Sendable {
     let quietPercentile: Float
     let transientProtection: Float
     let granularReduction: Float
+    let shimmerStabilization: Float
 }
 
 private struct MultibandDynamicsProcessor: Sendable {
