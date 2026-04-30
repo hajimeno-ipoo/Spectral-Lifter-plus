@@ -355,10 +355,79 @@ struct ContentView: View {
                     comparisonBandComparisonCard(input: inputMetrics, corrected: job.outputMetrics, mastered: job.masteredMetrics)
                         .frame(maxWidth: .infinity, alignment: .topLeading)
                 }
+                qualityReportCard(
+                    AudioQualityReportService.makeReport(
+                        input: inputMetrics,
+                        corrected: job.outputMetrics,
+                        mastered: job.masteredMetrics
+                    )
+                )
             } else {
                 Text("音声を選ぶと、ここに入力・補正後・最終版の比較がまとめて表示されます。")
                     .foregroundStyle(.secondary)
             }
+        }
+    }
+
+    private func qualityReportCard(_ report: AudioQualityReport) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("品質チェック")
+                    .font(.headline)
+                Spacer()
+                Text(qualityReportSeverityText(report.severity))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(qualityReportSeverityColor(report.severity))
+            }
+
+            if report.items.isEmpty {
+                Text("大きな音量低下、ピーク超過、高域の増えすぎ、ステレオ幅の急変は見つかっていません。")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(Array(report.items.enumerated()), id: \.offset) { _, item in
+                        HStack(alignment: .top, spacing: 8) {
+                            Circle()
+                                .fill(qualityReportSeverityColor(item.severity))
+                                .frame(width: 7, height: 7)
+                                .padding(.top, 6)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(item.title)
+                                    .font(.subheadline.weight(.semibold))
+                                Text(item.detail)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    private func qualityReportSeverityText(_ severity: AudioQualityReportSeverity) -> String {
+        switch severity {
+        case .info:
+            return "OK"
+        case .caution:
+            return "注意"
+        case .warning:
+            return "警告"
+        }
+    }
+
+    private func qualityReportSeverityColor(_ severity: AudioQualityReportSeverity) -> Color {
+        switch severity {
+        case .info:
+            return .green
+        case .caution:
+            return .orange
+        case .warning:
+            return .red
         }
     }
 

@@ -74,6 +74,84 @@ struct DenoiseMaskCoefficientTests {
         }
     }
 
+    @Test
+    func coreProtectionRaisesStableLowMidFloorForStrongDenoise() {
+        let baseFloor: Float = 0.11
+
+        let protectedFloor = DenoiseMaskCoefficients.protectedFloor(
+            baseFloor: baseFloor,
+            frequency: 1_000,
+            magnitude: 0.42,
+            noiseLevel: 0.06,
+            granularActivity: 0.004,
+            granularBaseline: 0.006,
+            coreProtection: 0.58
+        )
+
+        #expect(protectedFloor > baseFloor + 0.08)
+        #expect(protectedFloor <= 0.46)
+    }
+
+    @Test
+    func coreProtectionDoesNotLiftUnstableOrHighFrequencyBins() {
+        let baseFloor: Float = 0.11
+
+        let unstableFloor = DenoiseMaskCoefficients.protectedFloor(
+            baseFloor: baseFloor,
+            frequency: 2_500,
+            magnitude: 0.42,
+            noiseLevel: 0.06,
+            granularActivity: 0.35,
+            granularBaseline: 0.006,
+            coreProtection: 0.58
+        )
+        let highFrequencyFloor = DenoiseMaskCoefficients.protectedFloor(
+            baseFloor: baseFloor,
+            frequency: 7_000,
+            magnitude: 0.42,
+            noiseLevel: 0.06,
+            granularActivity: 0.004,
+            granularBaseline: 0.006,
+            coreProtection: 0.58
+        )
+
+        expectClose(unstableFloor, baseFloor)
+        expectClose(highFrequencyFloor, baseFloor)
+    }
+
+    @Test
+    func exceptionRelaxationWeakensShimmerStabilizationWhenAirBandIsStrong() {
+        let normalRelaxation = DenoiseShimmerStabilizer.exceptionRelaxation(
+            airEnergy: 0.12,
+            shimmerEnergy: 1.0,
+            maximum: 0.58
+        )
+        let exceptionRelaxation = DenoiseShimmerStabilizer.exceptionRelaxation(
+            airEnergy: 0.95,
+            shimmerEnergy: 1.0,
+            maximum: 0.58
+        )
+
+        let normalMask = DenoiseShimmerStabilizer.mask(
+            temporalExcessRatio: 0.72,
+            bandPosition: 0.5,
+            transientLift: 0,
+            stabilization: 0.18,
+            exceptionRelaxation: normalRelaxation
+        )
+        let relaxedMask = DenoiseShimmerStabilizer.mask(
+            temporalExcessRatio: 0.72,
+            bandPosition: 0.5,
+            transientLift: 0,
+            stabilization: 0.18,
+            exceptionRelaxation: exceptionRelaxation
+        )
+
+        #expect(normalRelaxation == 0)
+        #expect(exceptionRelaxation > 0.5)
+        #expect(relaxedMask > normalMask)
+    }
+
     private func expectClose(_ actual: Float, _ expected: Float, tolerance: Float = 0.000_001) {
         #expect(abs(actual - expected) <= tolerance)
     }
