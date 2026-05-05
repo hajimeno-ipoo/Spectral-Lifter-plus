@@ -24,11 +24,16 @@ struct NativeAudioProcessorBenchmarkTests {
         let expectedStages = [
             "loadAudio",
             "analyze",
-            "neuralPrediction",
+            "lowNoiseCleanup",
             "denoise",
-            "harmonicUpscale",
-            "multibandDynamics",
-            "loudnessFinalize",
+            "sibilanceShimmerGuard",
+            "analyzeDenoised",
+            "neuralPrediction",
+            "harmonicRepair",
+            "repairShimmerGuard",
+            "lowMidResidueGuard",
+            "shimmerPeakLimit",
+            "peakSafety",
             "saveAudio"
         ]
 
@@ -43,7 +48,7 @@ struct NativeAudioProcessorBenchmarkTests {
         #expect(logs.values.contains { $0.hasPrefix("ノイズ除去/18kHz以上: ") && $0.hasSuffix(" dB") })
         #expect(logs.values.contains { $0.hasPrefix("合計: ") && $0.hasSuffix("秒") })
         let total = try #require(parsedDuration(prefix: "合計: ", from: logs.values))
-        let stagePrefixes = ["読み込み: ", "解析: ", "解析補助: ", "ノイズ除去: ", "高域補完: ", "ダイナミクス: ", "最終音量: ", "書き出し: "]
+        let stagePrefixes = ["読み込み: ", "解析: ", "低域ノイズ: ", "ノイズ除去: ", "サ行保護: ", "再解析: ", "解析補助: ", "高域修復: ", "修復後シマー保護: ", "低中域残り: ", "シマー制限: ", "ピーク保護: ", "書き出し: "]
         var summedStages = 0.0
         for prefix in stagePrefixes {
             summedStages += try #require(parsedDuration(prefix: prefix, from: logs.values))

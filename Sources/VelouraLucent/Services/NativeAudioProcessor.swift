@@ -92,6 +92,7 @@ struct NativeAudioProcessor {
         inputFile: URL,
         outputFile: URL,
         denoiseStrength: DenoiseStrength = .balanced,
+        correctionSettings: CorrectionSettings? = nil,
         analysisMode: AudioAnalysisMode = .auto,
         logger: AudioProcessingLogger? = nil
     ) throws {
@@ -99,6 +100,7 @@ struct NativeAudioProcessor {
             inputFile: inputFile,
             outputFile: outputFile,
             denoiseStrength: denoiseStrength,
+            correctionSettings: correctionSettings ?? denoiseStrength.settings,
             analysisMode: analysisMode,
             logger: logger,
             collectsBenchmark: false
@@ -109,6 +111,7 @@ struct NativeAudioProcessor {
         inputFile: URL,
         outputFile: URL,
         denoiseStrength: DenoiseStrength = .balanced,
+        correctionSettings: CorrectionSettings? = nil,
         analysisMode: AudioAnalysisMode = .auto,
         logger: AudioProcessingLogger? = nil
     ) throws -> NativeAudioProcessingBenchmark {
@@ -116,6 +119,7 @@ struct NativeAudioProcessor {
             inputFile: inputFile,
             outputFile: outputFile,
             denoiseStrength: denoiseStrength,
+            correctionSettings: correctionSettings ?? denoiseStrength.settings,
             analysisMode: analysisMode,
             logger: logger,
             collectsBenchmark: true
@@ -126,6 +130,7 @@ struct NativeAudioProcessor {
         inputFile: URL,
         outputFile: URL,
         denoiseStrength: DenoiseStrength,
+        correctionSettings: CorrectionSettings,
         analysisMode: AudioAnalysisMode,
         logger: AudioProcessingLogger?,
         collectsBenchmark: Bool
@@ -141,44 +146,69 @@ struct NativeAudioProcessor {
         let resolvedAnalysisMode = analysisMode.resolvedMode
         logger?.log("音声を解析します")
         logger?.log(analysisMode.logDescription)
-        let analysis = measure("analyze", label: "解析", recorder: benchmarkRecorder, logger: logger) {
+        let originalAnalysis = measure("analyze", label: "解析", recorder: benchmarkRecorder, logger: logger) {
             AudioAnalyzer(mode: resolvedAnalysisMode).analyze(signal: signal)
         }
-        let neuralPrediction = measure("neuralPrediction", label: "解析補助", recorder: benchmarkRecorder, logger: logger) {
-            NeuralFoldoverEstimator().predict(
-                features: NeuralFoldoverFeatures(
-                    harmonicConfidence: analysis.harmonicConfidence,
-                    shimmerRatio: analysis.shimmerRatio,
-                    brightnessRatio: analysis.brightnessRatio,
-                    transientAmount: analysis.transientAmount,
-                    cutoffFrequency: analysis.cutoffFrequency,
-                    noiseAmount: analysis.noiseAmount,
-                    rolloffDepth: analysis.rolloffDepth,
-                    airBandEnergyRatio: analysis.airBandEnergyRatio,
-                    artifactBandRatio: analysis.artifactBandRatio
-                )
-            )
+
+        logger?.log("低域ノイズを先に整えます")
+        let lowCleaned = measure("lowNoiseCleanup", label: "低域ノイズ", recorder: benchmarkRecorder, logger: logger) {
+            let dehummed = HumRemover(settings: correctionSettings).process(signal: signal)
+            return RumbleReducer(settings: correctionSettings).process(signal: dehummed, reference: signal)
         }
 
         logger?.log("ノイズを除去します")
         let denoised = measure("denoise", label: "ノイズ除去", recorder: benchmarkRecorder, logger: logger) {
-            SpectralGateDenoiser(strength: denoiseStrength).process(signal: signal)
+            SpectralGateDenoiser(settings: correctionSettings).process(signal: lowCleaned)
         }
-        logDenoiseReport(input: signal, denoised: denoised, logger: logger)
+        logger?.log("サ行保護を行います")
+        let sibilanceGuarded = measure("sibilanceShimmerGuard", label: "サ行保護", recorder: benchmarkRecorder, logger: logger) {
+            SibilanceShimmerGuard(settings: correctionSettings).process(signal: denoised)
+        }
+
+        let postDenoiseAnalysis = measure("analyzeDenoised", label: "再解析", recorder: benchmarkRecorder, logger: logger) {
+            AudioAnalyzer(mode: resolvedAnalysisMode).analyze(signal: sibilanceGuarded)
+        }
+        let repairPrediction = measure("neuralPrediction", label: "解析補助", recorder: benchmarkRecorder, logger: logger) {
+            NeuralFoldoverEstimator().predict(
+                features: NeuralFoldoverFeatures(
+                    harmonicConfidence: postDenoiseAnalysis.harmonicConfidence,
+                    shimmerRatio: postDenoiseAnalysis.shimmerRatio,
+                    brightnessRatio: postDenoiseAnalysis.brightnessRatio,
+                    transientAmount: postDenoiseAnalysis.transientAmount,
+                    cutoffFrequency: originalAnalysis.cutoffFrequency,
+                    noiseAmount: postDenoiseAnalysis.noiseAmount,
+                    rolloffDepth: originalAnalysis.rolloffDepth,
+                    airBandEnergyRatio: postDenoiseAnalysis.airBandEnergyRatio,
+                    artifactBandRatio: postDenoiseAnalysis.artifactBandRatio
+                )
+            )
+        }
+        logDenoiseReport(input: signal, denoised: sibilanceGuarded, logger: logger)
 
         logger?.log("高域を補完します")
-        let upscaled = measure("harmonicUpscale", label: "高域補完", recorder: benchmarkRecorder, logger: logger) {
-            HarmonicUpscaler().process(signal: denoised, analysis: analysis, prediction: neuralPrediction)
+        let repaired = measure("harmonicRepair", label: "高域修復", recorder: benchmarkRecorder, logger: logger) {
+            CorrectionHarmonicRepair(settings: correctionSettings).process(
+                signal: sibilanceGuarded,
+                analysis: postDenoiseAnalysis,
+                prediction: repairPrediction
+            )
+        }
+        let repairGuarded = measure("repairShimmerGuard", label: "修復後シマー保護", recorder: benchmarkRecorder, logger: logger) {
+            SibilanceShimmerGuard(settings: correctionSettings).process(signal: repaired)
         }
 
-        logger?.log("ダイナミクスを整えます")
-        let shaped = measure("multibandDynamics", label: "ダイナミクス", recorder: benchmarkRecorder, logger: logger) {
-            MultibandDynamicsProcessor().process(signal: upscaled)
+        logger?.log("低中域の残りを軽く整えます")
+        let residueGuarded = measure("lowMidResidueGuard", label: "低中域残り", recorder: benchmarkRecorder, logger: logger) {
+            LowMidResidueGuard(settings: correctionSettings).process(signal: repairGuarded)
+        }
+        logger?.log("シマーを抑えます")
+        let shimmerLimited = measure("shimmerPeakLimit", label: "シマー制限", recorder: benchmarkRecorder, logger: logger) {
+            ShimmerPeakLimiter(settings: correctionSettings).process(signal: residueGuarded, reference: signal)
         }
 
-        logger?.log("最終音量を整えます")
-        let finalized = measure("loudnessFinalize", label: "最終音量", recorder: benchmarkRecorder, logger: logger) {
-            LoudnessProcessor().process(signal: shaped, referenceSignal: signal)
+        logger?.log("ピークを保護します")
+        let finalized = measure("peakSafety", label: "ピーク保護", recorder: benchmarkRecorder, logger: logger) {
+            PeakSafetyLimiter().process(signal: shimmerLimited)
         }
 
         logger?.log("処理済みファイルを書き出します")
@@ -353,6 +383,227 @@ private final class ConcurrentChannelResults: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return storage.map { $0 ?? [] }
+    }
+}
+
+private struct HumRemover: Sendable {
+    let settings: CorrectionSettings
+
+    func process(signal: AudioSignal) -> AudioSignal {
+        let detectedBase = dominantHumBase(signal: signal)
+        guard let detectedBase else { return signal }
+
+        let intensity = clamped(settings.lowCleanup * 0.55 + settings.noiseDetectionSensitivity * 0.35, min: 0, max: 1)
+        let channels = mapChannelsConcurrently(signal.channels) { channel in
+            attenuateHarmonics(channel: channel, sampleRate: signal.sampleRate, baseFrequency: detectedBase, intensity: intensity)
+        }
+        return AudioSignal(channels: channels, sampleRate: signal.sampleRate)
+    }
+
+    private func dominantHumBase(signal: AudioSignal) -> Double? {
+        let mono = signal.monoMixdown()
+        guard mono.count > 512 else { return nil }
+
+        let candidates = [50.0, 60.0].map { base in
+            (base: base, score: humScore(mono: mono, sampleRate: signal.sampleRate, baseFrequency: base))
+        }
+        guard let best = candidates.max(by: { $0.score < $1.score }), best.score > 8 else {
+            return nil
+        }
+        return best.base
+    }
+
+    private func humScore(mono: [Float], sampleRate: Double, baseFrequency: Double) -> Double {
+        var harmonic = baseFrequency
+        var score = 0.0
+        var count = 0
+        while harmonic <= min(300, sampleRate * 0.5 - 30) {
+            let center = sineMagnitudeDB(mono, frequency: harmonic, sampleRate: sampleRate)
+            let lower = sineMagnitudeDB(mono, frequency: max(20, harmonic - 17), sampleRate: sampleRate)
+            let upper = sineMagnitudeDB(mono, frequency: min(sampleRate * 0.5 - 20, harmonic + 17), sampleRate: sampleRate)
+            score += max(0, center - (lower + upper) * 0.5)
+            count += 1
+            harmonic += baseFrequency
+        }
+        return score / Double(max(count, 1))
+    }
+
+    private func sineMagnitudeDB(_ samples: [Float], frequency: Double, sampleRate: Double) -> Double {
+        var real = 0.0
+        var imag = 0.0
+        let angular = 2 * Double.pi * frequency / sampleRate
+        for index in samples.indices {
+            let phase = angular * Double(index)
+            let sample = Double(samples[index])
+            real += sample * cos(phase)
+            imag -= sample * sin(phase)
+        }
+        let magnitude = sqrt(real * real + imag * imag) * 2 / Double(max(samples.count, 1))
+        return 20 * log10(max(magnitude, 1e-12))
+    }
+
+    private func attenuateHarmonics(channel: [Float], sampleRate: Double, baseFrequency: Double, intensity: Float) -> [Float] {
+        var spectrogram = SpectralDSP.stft(channel)
+        guard spectrogram.frameCount > 0 else { return channel }
+
+        let frequencyStep = sampleRate / Double(spectrogram.fftSize)
+        var harmonic = baseFrequency
+        var harmonicIndex = 1
+        while harmonic <= min(300, sampleRate * 0.5 - 30) {
+            let centerBin = min(max(Int(round(harmonic / frequencyStep)), 0), spectrogram.binCount - 1)
+            let reduction = clamped((0.46 - Float(harmonicIndex - 1) * 0.055) * intensity, min: 0.10, max: 0.46)
+            for frameIndex in 0..<spectrogram.frameCount {
+                for binIndex in max(0, centerBin - 1)...min(spectrogram.binCount - 1, centerBin + 1) {
+                    let distance = abs(binIndex - centerBin)
+                    let gain = 1 - reduction * (distance == 0 ? 1 : 0.45)
+                    spectrogram.scaleBin(frameIndex: frameIndex, binIndex: binIndex, by: gain)
+                }
+            }
+            harmonicIndex += 1
+            harmonic += baseFrequency
+        }
+
+        return SpectralDSP.istft(spectrogram)
+    }
+}
+
+private struct RumbleReducer: Sendable {
+    let settings: CorrectionSettings
+
+    func process(signal: AudioSignal, reference: AudioSignal) -> AudioSignal {
+        let intensity = clamped(settings.lowCleanup * 0.68 + settings.noiseDetectionSensitivity * 0.22, min: 0, max: 1)
+        guard intensity > 0.05 else { return signal }
+        let channels = mapChannelsConcurrently(signal.channels) {
+            processChannel($0, sampleRate: signal.sampleRate, intensity: intensity)
+        }
+        return adaptiveRumbleLimit(
+            signal: AudioSignal(channels: channels, sampleRate: signal.sampleRate),
+            reference: reference
+        )
+    }
+
+    private func adaptiveRumbleLimit(signal: AudioSignal, reference: AudioSignal) -> AudioSignal {
+        let improvementDB = settings.correctionIntensity >= 0.65 ? 3.2 : (settings.correctionIntensity >= 0.45 ? 1.2 : 0.0)
+        guard improvementDB > 0 else { return signal }
+
+        let target = (NoiseMeasurementService.analyze(signal: reference).value(for: "rumble")?.comparableLevelDB ?? -120) - improvementDB
+        var currentSignal = signal
+        for _ in 0..<4 {
+            let current = NoiseMeasurementService.analyze(signal: currentSignal).value(for: "rumble")?.comparableLevelDB ?? -120
+            let excessDB = max(0, current - target)
+            guard excessDB > 0.1 else { return currentSignal }
+
+            let gain = powf(10, -Float(min(excessDB, 48)) / 20)
+            let sampleRate = currentSignal.sampleRate
+            let channels = mapChannelsConcurrently(currentSignal.channels) {
+                scaleBand($0, sampleRate: sampleRate, lower: 20, upper: 150, gain: gain)
+            }
+            currentSignal = AudioSignal(channels: channels, sampleRate: sampleRate)
+        }
+        return currentSignal
+    }
+
+    private func scaleBand(_ channel: [Float], sampleRate: Double, lower: Double, upper: Double, gain: Float) -> [Float] {
+        let band = SpectralDSP.lowPass(
+            SpectralDSP.highPass(channel, cutoff: lower, sampleRate: sampleRate),
+            cutoff: min(upper, sampleRate * 0.5 - 100),
+            sampleRate: sampleRate
+        )
+        let reduction = 1 - gain
+        return channel.indices.map { index in
+            channel[index] - band[index] * reduction
+        }
+    }
+
+    private func processChannel(_ channel: [Float], sampleRate: Double, intensity: Float) -> [Float] {
+        var spectrogram = SpectralDSP.stft(channel)
+        guard spectrogram.frameCount > 0 else { return channel }
+        let frequencyStep = sampleRate / Double(spectrogram.fftSize)
+        let endBin = min(max(Int(150 / frequencyStep), 0), spectrogram.binCount - 1)
+
+        for binIndex in 0...endBin {
+            let frequency = Double(binIndex) * frequencyStep
+            let bandWeight: Float
+            if frequency < 20 {
+                bandWeight = 0.95
+            } else if frequency < 35 {
+                bandWeight = 0.82
+            } else if frequency < 80 {
+                bandWeight = 1.25
+            } else {
+                bandWeight = 0.50
+            }
+            let gain = clamped(1 - bandWeight * intensity, min: 0.05, max: 1)
+            for frameIndex in 0..<spectrogram.frameCount {
+                spectrogram.scaleBin(frameIndex: frameIndex, binIndex: binIndex, by: gain)
+            }
+        }
+
+        return SpectralDSP.istft(spectrogram)
+    }
+}
+
+private struct SibilanceShimmerGuard: Sendable {
+    let settings: CorrectionSettings
+
+    func process(signal: AudioSignal) -> AudioSignal {
+        let defaults = settings.profile.settings
+        let intensity = clamped(
+            0.28
+                + settings.highNaturalness * 0.34
+                + settings.noiseDetectionSensitivity * 0.24
+                + max(0, settings.correctionIntensity - defaults.correctionIntensity) * 0.44,
+            min: 0.22,
+            max: 0.86
+        )
+        let channels = mapChannelsConcurrently(signal.channels) {
+            processChannel($0, sampleRate: signal.sampleRate, intensity: intensity)
+        }
+        return AudioSignal(channels: channels, sampleRate: signal.sampleRate)
+    }
+
+    private func processChannel(_ channel: [Float], sampleRate: Double, intensity: Float) -> [Float] {
+        var spectrogram = SpectralDSP.stft(channel)
+        guard spectrogram.frameCount > 2 else { return channel }
+
+        let frequencyStep = sampleRate / Double(spectrogram.fftSize)
+        let startBin = min(max(Int(5_000 / frequencyStep), 0), spectrogram.binCount - 1)
+        let endBin = min(max(Int(14_000 / frequencyStep), startBin), spectrogram.binCount - 1)
+        guard endBin > startBin else { return channel }
+
+        var bandEnergy = Array(repeating: Float.zero, count: spectrogram.frameCount)
+        for frameIndex in 0..<spectrogram.frameCount {
+            var sum: Float = 0
+            for binIndex in startBin...endBin {
+                sum += spectrogram.magnitude(frameIndex: frameIndex, binIndex: binIndex)
+            }
+            bandEnergy[frameIndex] = sum / Float(endBin - startBin + 1)
+        }
+
+        let median = SpectralDSP.percentile(bandEnergy, 50)
+        let peakThreshold = max(median * 1.04, SpectralDSP.percentile(bandEnergy, 55))
+        guard peakThreshold > 1e-9 else { return channel }
+
+        for frameIndex in 0..<spectrogram.frameCount {
+            let excess = max(0, (bandEnergy[frameIndex] - peakThreshold) / max(bandEnergy[frameIndex], 1e-6))
+            for binIndex in startBin...endBin {
+                let frequency = Double(binIndex) * frequencyStep
+                let bandWeight: Float
+                if frequency < 8_000 {
+                    bandWeight = 0.72
+                } else if frequency < 12_000 {
+                    bandWeight = 1.0
+                } else {
+                    bandWeight = 0.86
+                }
+                let steadyReduction = intensity * bandWeight * (frequency >= 8_000 ? 1.15 : 0.18)
+                let peakReduction = min(0.96, excess * intensity) * bandWeight
+                let reduction = min(0.96, steadyReduction + peakReduction)
+                spectrogram.scaleBin(frameIndex: frameIndex, binIndex: binIndex, by: 1 - reduction)
+            }
+        }
+
+        return SpectralDSP.istft(spectrogram)
     }
 }
 
@@ -550,16 +801,84 @@ struct AudioAnalyzer {
 }
 
 private struct SpectralGateDenoiser: Sendable {
-    let strength: DenoiseStrength
+    let settings: CorrectionSettings
 
     private var tuning: DenoiseTuning {
+        let base = Self.baseTuning(for: settings.profile)
+        let defaults = settings.profile.settings
+        return DenoiseTuning(
+            passes: settings.correctionIntensity < 0.42 ? 1 : (settings.correctionIntensity > 0.66 ? 3 : 2),
+            thresholdMultiplier: clamped(
+                base.thresholdMultiplier
+                    + (settings.noiseDetectionSensitivity - defaults.noiseDetectionSensitivity) * 1.35
+                    + (settings.correctionIntensity - defaults.correctionIntensity) * 0.90,
+                min: 1.0,
+                max: 2.5
+            ),
+            lowBandFloor: clamped(
+                base.lowBandFloor
+                    + (settings.originalRetention - defaults.originalRetention) * 0.14
+                    - (settings.lowCleanup - defaults.lowCleanup) * 0.26
+                    - (settings.noiseDetectionSensitivity - defaults.noiseDetectionSensitivity) * 0.06,
+                min: 0.04,
+                max: 0.34
+            ),
+            highBandFloor: clamped(
+                base.highBandFloor
+                    + (settings.originalRetention - defaults.originalRetention) * 0.12
+                    - (settings.correctionIntensity - defaults.correctionIntensity) * 0.18
+                    - (settings.highNaturalness - defaults.highNaturalness) * 0.16,
+                min: 0.12,
+                max: 0.42
+            ),
+            quietPercentile: clamped(
+                base.quietPercentile + (settings.noiseDetectionSensitivity - defaults.noiseDetectionSensitivity) * 28,
+                min: 10,
+                max: 40
+            ),
+            transientProtection: clamped(
+                base.transientProtection + (settings.originalRetention - defaults.originalRetention) * 0.22,
+                min: 0.08,
+                max: 0.42
+            ),
+            granularReduction: clamped(
+                base.granularReduction
+                    + (settings.correctionIntensity - defaults.correctionIntensity) * 0.40
+                    + (settings.highNaturalness - defaults.highNaturalness) * 0.34
+                    + (settings.noiseDetectionSensitivity - defaults.noiseDetectionSensitivity) * 0.18,
+                min: 0.10,
+                max: 0.72
+            ),
+            shimmerStabilization: clamped(
+                base.shimmerStabilization
+                    + (settings.highNaturalness - defaults.highNaturalness) * 0.42
+                    + (settings.noiseDetectionSensitivity - defaults.noiseDetectionSensitivity) * 0.12,
+                min: 0.04,
+                max: 0.48
+            ),
+            coreProtection: clamped(
+                base.coreProtection + (settings.coreProtection - defaults.coreProtection) * 0.35,
+                min: 0.20,
+                max: 0.78
+            ),
+            exceptionRelaxation: clamped(
+                base.exceptionRelaxation
+                    + (settings.originalRetention - defaults.originalRetention) * 0.20
+                    + (settings.stereoProtection - defaults.stereoProtection) * 0.08,
+                min: 0.25,
+                max: 0.70
+            )
+        )
+    }
+
+    private static func baseTuning(for strength: DenoiseStrength) -> DenoiseTuning {
         switch strength {
         case .gentle:
             return DenoiseTuning(passes: 1, thresholdMultiplier: 1.28, lowBandFloor: 0.22, highBandFloor: 0.33, quietPercentile: 16, transientProtection: 0.28, granularReduction: 0.18, shimmerStabilization: 0.08, coreProtection: 0.30, exceptionRelaxation: 0.36)
         case .balanced:
             return DenoiseTuning(passes: 2, thresholdMultiplier: 1.46, lowBandFloor: 0.16, highBandFloor: 0.28, quietPercentile: 20, transientProtection: 0.22, granularReduction: 0.26, shimmerStabilization: 0.13, coreProtection: 0.42, exceptionRelaxation: 0.46)
         case .strong:
-            return DenoiseTuning(passes: 3, thresholdMultiplier: 1.68, lowBandFloor: 0.11, highBandFloor: 0.22, quietPercentile: 26, transientProtection: 0.16, granularReduction: 0.34, shimmerStabilization: 0.18, coreProtection: 0.58, exceptionRelaxation: 0.58)
+            return DenoiseTuning(passes: 3, thresholdMultiplier: 1.85, lowBandFloor: 0.10, highBandFloor: 0.14, quietPercentile: 30, transientProtection: 0.12, granularReduction: 0.48, shimmerStabilization: 0.24, coreProtection: 0.50, exceptionRelaxation: 0.40)
         }
     }
 
@@ -596,19 +915,27 @@ private struct SpectralGateDenoiser: Sendable {
             value <= quietThreshold ? index : nil
         }
         let sourceFrameIndices = quietFrameIndices.isEmpty ? Array(0..<spectrogram.frameCount) : quietFrameIndices
+        var isSourceFrame = Array(repeating: false, count: spectrogram.frameCount)
+        for frameIndex in sourceFrameIndices {
+            isSourceFrame[frameIndex] = true
+        }
         var noiseSums = Array(repeating: Float.zero, count: binCount)
         var noiseMinimums = Array(repeating: Float.greatestFiniteMagnitude, count: binCount)
+        var magnitudesByBin = Array(repeating: [Float](), count: binCount)
         var granularSums = Array(repeating: Float.zero, count: binCount)
         let smoothedFrameEnergy = SpectralDSP.movingAverage(frameEnergy, windowSize: 7)
 
-        for frameIndex in sourceFrameIndices {
+        for frameIndex in 0..<spectrogram.frameCount {
             let frameStart = frameIndex * binCount
             let previousFrameStart = frameStart - binCount
             for binIndex in 0..<binCount {
                 let index = frameStart + binIndex
                 let magnitude = hypotf(spectrogram.real[index], spectrogram.imag[index])
-                noiseSums[binIndex] += magnitude
-                noiseMinimums[binIndex] = min(noiseMinimums[binIndex], magnitude)
+                magnitudesByBin[binIndex].append(magnitude)
+                if isSourceFrame[frameIndex] {
+                    noiseSums[binIndex] += magnitude
+                    noiseMinimums[binIndex] = min(noiseMinimums[binIndex], magnitude)
+                }
                 if frameIndex > 0 {
                     let previousIndex = previousFrameStart + binIndex
                     let previous = hypotf(spectrogram.real[previousIndex], spectrogram.imag[previousIndex])
@@ -623,9 +950,10 @@ private struct SpectralGateDenoiser: Sendable {
         for binIndex in 0..<binCount {
             let averageNoise = noiseSums[binIndex] / sourceCount
             let minimumNoise = noiseMinimums[binIndex].isFinite ? noiseMinimums[binIndex] : averageNoise
-            let baseNoise = averageNoise * 0.8 + minimumNoise * 0.2
+            let percentileNoise = SpectralDSP.percentile(magnitudesByBin[binIndex], 12)
+            let baseNoise = averageNoise * 0.55 + minimumNoise * 0.20 + percentileNoise * 0.25
             noiseProfile[binIndex] = baseNoise * coefficients.highBandBias[binIndex]
-            let granularAverage = granularSums[binIndex] / sourceCount
+            let granularAverage = granularSums[binIndex] / Float(max(spectrogram.frameCount, 1))
             granularProfile[binIndex] = granularAverage * coefficients.granularProfileScale[binIndex]
             if binIndex >= shimmerStartBin, binIndex <= shimmerEndBin {
                 shimmerEnergy += averageNoise
@@ -641,7 +969,7 @@ private struct SpectralGateDenoiser: Sendable {
 
         for frameIndex in 0..<spectrogram.frameCount {
             let transientRatio = frameEnergy[frameIndex] / max(smoothedFrameEnergy[frameIndex], 1e-6)
-            let transientLift = max(0, min(0.35, (transientRatio - 1) * tuning.transientProtection))
+            let frameTransientLift = max(0, min(0.35, (transientRatio - 1) * tuning.transientProtection))
             let frameStart = frameIndex * binCount
             let previousFrameStart = frameStart - binCount
             for binIndex in 0..<binCount {
@@ -681,17 +1009,34 @@ private struct SpectralGateDenoiser: Sendable {
                     magnitude: magnitude,
                     shimmerStartBin: shimmerStartBin,
                     shimmerEndBin: shimmerEndBin,
-                    transientLift: transientLift,
+                    transientLift: transientProtectionLift(frameLift: frameTransientLift, frequency: frequency),
                     exceptionRelaxation: shimmerExceptionRelaxation
                 )
-                let denoiseMask = max(rawMask, granularMask)
-                let mask = min(1.0, max(floor, min(denoiseMask, shimmerMask)) + transientLift)
+                let highBandWeight = min(1, max(0, Float((frequency - 8_000) / 8_000)))
+                let combinedNoiseMask = rawMask * (1 - highBandWeight) + min(rawMask, granularMask) * highBandWeight
+                let mask = min(
+                    1.0,
+                    max(floor, min(combinedNoiseMask, shimmerMask)) + transientProtectionLift(frameLift: frameTransientLift, frequency: frequency)
+                )
                 spectrogram.real[index] *= mask
                 spectrogram.imag[index] *= mask
             }
         }
 
         return SpectralDSP.istft(spectrogram)
+    }
+
+    private func transientProtectionLift(frameLift: Float, frequency: Double) -> Float {
+        if frequency < 5_000 {
+            return frameLift
+        }
+        if frequency < 10_000 {
+            return frameLift * 0.5
+        }
+        if frequency < 16_000 {
+            return frameLift * 0.2
+        }
+        return 0
     }
 
     private func shimmerStabilizationMask(
@@ -829,11 +1174,27 @@ private struct DenoiseTuning: Sendable {
 }
 
 private struct MultibandDynamicsProcessor: Sendable {
-    let bands: [(ClosedRange<Double>, Float, Float)] = [
-        (5_000...8_000, 3.0, 80),
-        (10_000...14_000, 3.2, 68),
-        (18_000...24_000, 2.8, 82)
-    ]
+    let settings: CorrectionSettings
+
+    private var bands: [(range: ClosedRange<Double>, reductionDB: Float, percentile: Float, steadyReductionDB: Float)] {
+        let defaults = settings.profile.settings
+        let lowCleanupDelta = max(0, settings.lowCleanup - defaults.lowCleanup)
+        let lowMidCleanupDelta = max(0, settings.lowMidCleanup - defaults.lowMidCleanup)
+        let naturalnessDelta = max(0, settings.highNaturalness - defaults.highNaturalness)
+        let sensitivityDelta = max(0, settings.noiseDetectionSensitivity - defaults.noiseDetectionSensitivity)
+        let presenceReduction = clamped(3.0 + (settings.presenceRepair - defaults.presenceRepair) * 1.5 + naturalnessDelta * 1.6, min: 2.2, max: 5.8)
+        let shimmerReduction = clamped(3.2 + naturalnessDelta * 4.2 + sensitivityDelta * 2.2, min: 2.4, max: 7.4)
+        let airReduction = clamped(2.8 + naturalnessDelta * 2.8 + sensitivityDelta * 1.4 - (settings.airRepair - defaults.airRepair) * 0.6, min: 1.8, max: 6.4)
+        return [
+            (20...150, clamped(2.2 + lowCleanupDelta * 3.0, min: 1.8, max: 5.2), 62, lowCleanupDelta * 3.0),
+            (45...70, clamped(2.8 + lowCleanupDelta * 3.4 + sensitivityDelta * 1.4, min: 2.0, max: 6.0), 58, lowCleanupDelta * 2.4 + sensitivityDelta * 1.2),
+            (90...130, clamped(2.4 + lowCleanupDelta * 3.0 + sensitivityDelta * 1.2, min: 1.8, max: 5.6), 58, lowCleanupDelta * 2.0 + sensitivityDelta * 1.0),
+            (200...1_000, clamped(2.4 + lowMidCleanupDelta * 3.0, min: 1.8, max: 5.8), 66, lowMidCleanupDelta * 2.2),
+            (5_000...8_000, presenceReduction, 78, naturalnessDelta * 2.0 + sensitivityDelta * 0.8),
+            (10_000...14_000, shimmerReduction, 58, naturalnessDelta * 6.0 + sensitivityDelta * 3.0),
+            (18_000...24_000, airReduction, 76, naturalnessDelta * 3.8 + sensitivityDelta * 1.8)
+        ]
+    }
 
     func process(signal: AudioSignal) -> AudioSignal {
         let channels = mapChannelsConcurrently(signal.channels) {
@@ -849,14 +1210,15 @@ private struct MultibandDynamicsProcessor: Sendable {
         var rawMask = Array(repeating: Float.zero, count: spectrogram.frameCount)
         var smoothedMask = Array(repeating: Float.zero, count: spectrogram.frameCount)
 
-        for (band, reductionDB, percentile) in bands {
-            let start = min(Int(band.lowerBound / frequencyStep), spectrogram.binCount - 1)
-            let end = min(Int(band.upperBound / frequencyStep), spectrogram.binCount - 1)
+        for band in bands {
+            let start = min(Int(band.range.lowerBound / frequencyStep), spectrogram.binCount - 1)
+            let end = min(Int(band.range.upperBound / frequencyStep), spectrogram.binCount - 1)
             guard end > start else { continue }
 
             fillBandEnergy(spectrogram: spectrogram, startBin: start, endBin: end, into: &bandEnergy)
-            let threshold = SpectralDSP.percentile(bandEnergy, percentile)
-            let reductionLinear = powf(10, -reductionDB / 20)
+            let threshold = SpectralDSP.percentile(bandEnergy, band.percentile)
+            let reductionLinear = powf(10, -band.reductionDB / 20)
+            let steadyReductionLinear = powf(10, -band.steadyReductionDB / 20)
             fillBandMask(
                 bandEnergy: bandEnergy,
                 threshold: threshold,
@@ -866,7 +1228,8 @@ private struct MultibandDynamicsProcessor: Sendable {
             fillMovingAverage(rawMask, windowSize: 5, into: &smoothedMask)
 
             for frameIndex in 0..<spectrogram.frameCount {
-                let gain = max(reductionLinear, min(1.0, smoothedMask[frameIndex]))
+                let dynamicGain = max(reductionLinear, min(1.0, smoothedMask[frameIndex]))
+                let gain = min(dynamicGain, steadyReductionLinear)
                 for binIndex in start...end {
                     spectrogram.scaleBin(frameIndex: frameIndex, binIndex: binIndex, by: gain)
                 }
@@ -935,26 +1298,159 @@ private struct MultibandDynamicsProcessor: Sendable {
     }
 }
 
-private struct HarmonicUpscaler: Sendable {
+private struct LowMidResidueGuard: Sendable {
+    let settings: CorrectionSettings
+
+    func process(signal: AudioSignal) -> AudioSignal {
+        let defaults = settings.profile.settings
+        let intensity = clamped(
+            0.10 + settings.lowMidCleanup * 0.20 + max(0, settings.lowMidCleanup - defaults.lowMidCleanup) * 0.35,
+            min: 0.08,
+            max: 0.32
+        )
+        let channels = mapChannelsConcurrently(signal.channels) {
+            processChannel($0, sampleRate: signal.sampleRate, intensity: intensity)
+        }
+        return AudioSignal(channels: channels, sampleRate: signal.sampleRate)
+    }
+
+    private func processChannel(_ channel: [Float], sampleRate: Double, intensity: Float) -> [Float] {
+        var spectrogram = SpectralDSP.stft(channel)
+        guard spectrogram.frameCount > 0 else { return channel }
+        let frequencyStep = sampleRate / Double(spectrogram.fftSize)
+        let startBin = min(max(Int(200 / frequencyStep), 0), spectrogram.binCount - 1)
+        let endBin = min(max(Int(1_000 / frequencyStep), startBin), spectrogram.binCount - 1)
+        guard endBin > startBin else { return channel }
+
+        var bandEnergy = Array(repeating: Float.zero, count: spectrogram.frameCount)
+        for frameIndex in 0..<spectrogram.frameCount {
+            var sum: Float = 0
+            for binIndex in startBin...endBin {
+                sum += spectrogram.magnitude(frameIndex: frameIndex, binIndex: binIndex)
+            }
+            bandEnergy[frameIndex] = sum / Float(endBin - startBin + 1)
+        }
+
+        let sustainedThreshold = SpectralDSP.percentile(bandEnergy, 62)
+        for frameIndex in 0..<spectrogram.frameCount where bandEnergy[frameIndex] <= sustainedThreshold {
+            let reduction = intensity * (1 - bandEnergy[frameIndex] / max(sustainedThreshold, 1e-6))
+            let gain = 1 - reduction
+            for binIndex in startBin...endBin {
+                spectrogram.scaleBin(frameIndex: frameIndex, binIndex: binIndex, by: gain)
+            }
+        }
+
+        return SpectralDSP.istft(spectrogram)
+    }
+}
+
+private struct ShimmerPeakLimiter: Sendable {
+    let settings: CorrectionSettings
+
+    func process(signal: AudioSignal, reference: AudioSignal) -> AudioSignal {
+        let attenuationDB = max(0, (settings.correctionIntensity - 0.38) * 42 + (settings.noiseDetectionSensitivity - 0.40) * 8)
+        let baseGain = powf(10, -attenuationDB / 20)
+        let channels = mapChannelsConcurrently(signal.channels) {
+            processChannel($0, sampleRate: signal.sampleRate, lower: 5_000, upper: 14_000, gain: baseGain)
+        }
+        let baseLimited = AudioSignal(channels: channels, sampleRate: signal.sampleRate)
+        let shimmerLimited = adaptiveLimit(
+            signal: baseLimited,
+            reference: reference,
+            id: "shimmer",
+            lower: 5_000,
+            upper: 14_000,
+            improvementDB: targetImprovementDB
+        )
+        return adaptiveLimit(
+            signal: shimmerLimited,
+            reference: reference,
+            id: "hiss",
+            lower: 5_000,
+            upper: 20_000,
+            improvementDB: targetImprovementDB
+        )
+    }
+
+    private func comparableLevel(_ id: String, in signal: AudioSignal) -> Double {
+        NoiseMeasurementService.analyze(signal: signal).value(for: id)?.comparableLevelDB ?? -120
+    }
+
+    private var targetImprovementDB: Double {
+        if settings.correctionIntensity >= 0.65 { return 1.0 }
+        if settings.correctionIntensity >= 0.45 { return 0.35 }
+        return -0.2
+    }
+
+    private func adaptiveLimit(
+        signal: AudioSignal,
+        reference: AudioSignal,
+        id: String,
+        lower: Double,
+        upper: Double,
+        improvementDB: Double
+    ) -> AudioSignal {
+        let target = comparableLevel(id, in: reference) - improvementDB
+        var currentSignal = signal
+
+        for _ in 0..<5 {
+            let current = comparableLevel(id, in: currentSignal)
+            let excessDB = max(0, current - target)
+            guard excessDB > 0.1 else { return currentSignal }
+
+            let gain = powf(10, -Float(min(excessDB, 72)) / 20)
+            let sampleRate = currentSignal.sampleRate
+            let channels = mapChannelsConcurrently(currentSignal.channels) {
+                processChannel($0, sampleRate: sampleRate, lower: lower, upper: upper, gain: gain)
+            }
+            currentSignal = AudioSignal(channels: channels, sampleRate: sampleRate)
+        }
+
+        return currentSignal
+    }
+
+    private func processChannel(_ channel: [Float], sampleRate: Double, lower: Double, upper: Double, gain: Float) -> [Float] {
+        let band = SpectralDSP.lowPass(
+            SpectralDSP.highPass(channel, cutoff: lower, sampleRate: sampleRate),
+            cutoff: min(upper, sampleRate * 0.5 - 100),
+            sampleRate: sampleRate
+        )
+        let reduction = 1 - gain
+        return channel.indices.map { index in
+            channel[index] - band[index] * reduction
+        }
+    }
+}
+
+private struct CorrectionHarmonicRepair: Sendable {
+    let settings: CorrectionSettings
+
     func process(signal: AudioSignal, analysis: AnalysisData, prediction: NeuralFoldoverPrediction) -> AudioSignal {
+        let defaults = settings.profile.settings
         let cutoff = max(analysis.cutoffFrequency - 1_000, 12_000)
         let harmonicWeight = min(1.25, 0.55 + Float(analysis.dominantHarmonics.count) * 0.08 + analysis.harmonicConfidence * 0.26)
         let shimmerControl = analysis.hasShimmer ? max(0.65, 1 - analysis.shimmerRatio * 1.4) : 1.0
         let deficiency = Float(max(0, 16_000 - analysis.cutoffFrequency) / 4_000)
         let brightnessBoost = max(0.9, min(1.2, 1.02 + (0.55 - analysis.brightnessRatio) * 0.35))
-        let baseGain = max(0.05, min(0.22, (0.08 + deficiency * 0.08) * harmonicWeight * shimmerControl))
+        let harmonicScale = clamped(1 + (settings.harmonicRepairAmount - defaults.harmonicRepairAmount) * 0.70 + (settings.presenceRepair - defaults.presenceRepair) * 0.25, min: 0.60, max: 1.45)
+        let noiseGuard = clamped(1.0 - analysis.noiseAmount * 0.60 - analysis.artifactBandRatio * 0.50, min: 0.25, max: 1.0)
+        let airScale = clamped(0.35 + (settings.airRepair - defaults.airRepair) * 0.28 - (settings.highNaturalness - defaults.highNaturalness) * 0.30, min: 0.18, max: 0.58) * noiseGuard
+        let transientScale = clamped(0.42 + (settings.presenceRepair - defaults.presenceRepair) * 0.20, min: 0.24, max: 0.62) * noiseGuard
+        let foldoverScale = clamped(1 + (settings.foldoverRepairAmount - defaults.foldoverRepairAmount) * 0.85 - (settings.highNaturalness - defaults.highNaturalness) * 0.25, min: 0.45, max: 1.45)
+        let cleanupGuard = clamped(1 - settings.correctionIntensity * 0.58 - settings.noiseDetectionSensitivity * 0.18, min: 0.28, max: 1.0)
+        let baseGain = max(0.03, min(0.16, (0.06 + deficiency * 0.05) * harmonicWeight * shimmerControl)) * harmonicScale * noiseGuard * cleanupGuard
         let airGain = max(
-            0.06,
-            min(0.34, (0.10 + deficiency * 0.18) * brightnessBoost - analysis.shimmerRatio * 0.03 + prediction.airGainBias)
-        ) * (1 - prediction.harshnessGuard * 0.55)
+            0,
+            min(0.16, (0.05 + deficiency * 0.08) * brightnessBoost - analysis.shimmerRatio * 0.04 + prediction.airGainBias * 0.45)
+        ) * (1 - prediction.harshnessGuard * 0.55) * airScale * cleanupGuard
         let transientBoost = max(
-            0.06,
-            min(0.24, 0.12 + analysis.transientAmount * 0.06 + prediction.transientBoostBias)
-        ) * (1 - prediction.harshnessGuard * 0.35)
+            0,
+            min(0.12, 0.04 + analysis.transientAmount * 0.03 + prediction.transientBoostBias * 0.45)
+        ) * (1 - prediction.harshnessGuard * 0.35) * transientScale * cleanupGuard
         let foldoverMix = max(
-            0.04,
-            min(0.32, 0.08 + deficiency * 0.16 + analysis.harmonicConfidence * 0.08 - analysis.shimmerRatio * 0.04 + prediction.foldoverMix - 0.12)
-        ) * (1 - prediction.harshnessGuard * 0.62)
+            0.02,
+            min(0.22, 0.05 + deficiency * 0.11 + analysis.harmonicConfidence * 0.06 - analysis.shimmerRatio * 0.06 + prediction.foldoverMix * 0.70 - 0.12)
+        ) * (1 - prediction.harshnessGuard * 0.62) * foldoverScale * noiseGuard * cleanupGuard
 
         let channels = mapChannelsConcurrently(signal.channels) { channel in
             let folded = foldover(channel: channel, sampleRate: signal.sampleRate, cutoff: cutoff, mix: foldoverMix)
@@ -1017,20 +1513,13 @@ private struct HarmonicUpscaler: Sendable {
     }
 }
 
-private struct LoudnessProcessor {
+private struct PeakSafetyLimiter {
     let peakLimitDB: Float = -1
     let limiterReleaseMs: Float = 120
-    let referenceLoudnessMarginLU: Float = 0.3
 
-    func process(signal: AudioSignal, referenceSignal: AudioSignal? = nil) -> AudioSignal {
+    func process(signal: AudioSignal) -> AudioSignal {
         let peakLimit = powf(10, peakLimitDB / 20)
         var channels = applyLinkedLimiter(signal.channels, peakLimit: peakLimit, sampleRate: signal.sampleRate)
-        channels = restoreReferenceLoudnessIfNeeded(
-            channels,
-            sampleRate: signal.sampleRate,
-            referenceSignal: referenceSignal,
-            peakLimit: peakLimit
-        )
 
         let peak = approximateTruePeak(channels: channels)
         if peak > peakLimit {
@@ -1038,27 +1527,6 @@ private struct LoudnessProcessor {
             channels = channels.map { $0.map { $0 * trim } }
         }
         return AudioSignal(channels: channels, sampleRate: signal.sampleRate)
-    }
-
-    private func restoreReferenceLoudnessIfNeeded(
-        _ channels: [[Float]],
-        sampleRate: Double,
-        referenceSignal: AudioSignal?,
-        peakLimit: Float
-    ) -> [[Float]] {
-        guard let referenceSignal else { return channels }
-        let targetLoudness = MasteringAnalysisService.integratedLoudness(signal: referenceSignal) - referenceLoudnessMarginLU
-        let currentSignal = AudioSignal(channels: channels, sampleRate: sampleRate)
-        let currentLoudness = MasteringAnalysisService.integratedLoudness(signal: currentSignal)
-        guard targetLoudness.isFinite, currentLoudness.isFinite, currentLoudness < targetLoudness else {
-            return channels
-        }
-
-        let gain = powf(10, (targetLoudness - currentLoudness) / 20)
-        let boosted = channels.map { channel in
-            channel.map { $0 * gain }
-        }
-        return applyLinkedLimiter(boosted, peakLimit: peakLimit, sampleRate: sampleRate)
     }
 
     private func applyLinkedLimiter(_ channels: [[Float]], peakLimit: Float, sampleRate: Double) -> [[Float]] {
@@ -1107,4 +1575,8 @@ private struct LoudnessProcessor {
         }
         return peak
     }
+}
+
+private func clamped(_ value: Float, min minValue: Float, max maxValue: Float) -> Float {
+    Swift.min(maxValue, Swift.max(minValue, value))
 }

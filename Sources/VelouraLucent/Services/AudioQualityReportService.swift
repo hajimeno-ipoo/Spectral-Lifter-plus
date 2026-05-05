@@ -29,21 +29,28 @@ enum AudioQualityReportService {
         input: AudioMetricSnapshot?,
         corrected: AudioMetricSnapshot?,
         mastered: AudioMetricSnapshot?
-    ) -> AudioQualityReport {
+    ) -> AudioQualityReport? {
+        guard mastered != nil else { return nil }
+
         var items: [AudioQualityReportItem] = []
+        var hasComparison = false
 
         if let input, let corrected {
+            hasComparison = true
             items.append(contentsOf: compare(reference: input, target: corrected, stageName: "補正後"))
         }
 
         if let corrected, let mastered {
+            hasComparison = true
             items.append(contentsOf: compare(reference: corrected, target: mastered, stageName: "マスタリング後"))
         }
 
         if let input, let mastered {
+            hasComparison = true
             items.append(contentsOf: compareFinal(input: input, mastered: mastered))
         }
 
+        guard hasComparison else { return nil }
         return AudioQualityReport(items: items)
     }
 
@@ -56,10 +63,17 @@ enum AudioQualityReportService {
 
         let loudnessDrop = reference.integratedLoudnessLUFS - target.integratedLoudnessLUFS
         if loudnessDrop >= 1.0 {
-            items.append(.warning(
-                "\(stageName)の音量感が下がっています",
-                "Integrated Loudness が \(format(loudnessDrop)) LU 下がっています。"
-            ))
+            if stageName == "補正後" {
+                items.append(.info(
+                    "補正後は音量を作らないため音量が下がっています",
+                    "Integrated Loudness が \(format(loudnessDrop)) LU 下がっています。最終版で戻る場合は問題として扱いません。"
+                ))
+            } else {
+                items.append(.caution(
+                    "\(stageName)の音量感が下がっています",
+                    "Integrated Loudness が \(format(loudnessDrop)) LU 下がっています。"
+                ))
+            }
         }
 
         if target.truePeakDBFS > -0.3 {
@@ -98,6 +112,14 @@ enum AudioQualityReportService {
     private static func compareFinal(input: AudioMetricSnapshot, mastered: AudioMetricSnapshot) -> [AudioQualityReportItem] {
         var items: [AudioQualityReportItem] = []
         let loudnessIncrease = mastered.integratedLoudnessLUFS - input.integratedLoudnessLUFS
+        let loudnessDrop = input.integratedLoudnessLUFS - mastered.integratedLoudnessLUFS
+
+        if loudnessDrop >= 1.5 {
+            items.append(.caution(
+                "最終版の音量感が低めです",
+                "入力より Integrated Loudness が \(format(loudnessDrop)) LU 下がっています。"
+            ))
+        }
 
         if loudnessIncrease >= 4.0 {
             items.append(.caution(
@@ -177,6 +199,10 @@ enum AudioQualityReportService {
 }
 
 private extension AudioQualityReportItem {
+    static func info(_ title: String, _ detail: String) -> AudioQualityReportItem {
+        AudioQualityReportItem(severity: .info, title: title, detail: detail)
+    }
+
     static func warning(_ title: String, _ detail: String) -> AudioQualityReportItem {
         AudioQualityReportItem(severity: .warning, title: title, detail: detail)
     }

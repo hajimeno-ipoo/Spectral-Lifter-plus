@@ -3,20 +3,26 @@ import SwiftUI
 enum ProcessingStep: String, CaseIterable, Hashable {
     case loadAudio = "入力音声を読み込みます"
     case analyze = "音声を解析します"
+    case lowNoiseCleanup = "低域ノイズを先に整えます"
     case denoise = "ノイズを除去します"
-    case upscale = "高域を補完します"
-    case dynamics = "ダイナミクスを整えます"
-    case loudness = "最終音量を整えます"
+    case sibilanceShimmerGuard = "サ行保護を行います"
+    case harmonicRepair = "高域を補完します"
+    case lowMidResidueGuard = "低中域の残りを軽く整えます"
+    case shimmerPeakLimit = "シマーを抑えます"
+    case peakSafety = "ピークを保護します"
     case save = "処理済みファイルを書き出します"
 
     var title: String {
         switch self {
         case .loadAudio: "読み込み"
         case .analyze: "解析"
+        case .lowNoiseCleanup: "低域整理"
         case .denoise: "ノイズ除去"
-        case .upscale: "高域補完"
-        case .dynamics: "ダイナミクス"
-        case .loudness: "音量調整"
+        case .sibilanceShimmerGuard: "サ行保護"
+        case .harmonicRepair: "高域修復"
+        case .lowMidResidueGuard: "低中域整理"
+        case .shimmerPeakLimit: "シマー制限"
+        case .peakSafety: "ピーク保護"
         case .save: "書き出し"
         }
     }
@@ -33,6 +39,9 @@ final class ProcessingJob {
     var inputMetrics: AudioMetricSnapshot?
     var outputMetrics: AudioMetricSnapshot?
     var masteredMetrics: AudioMetricSnapshot?
+    var inputNoiseMeasurements: NoiseMeasurementSnapshot?
+    var outputNoiseMeasurements: NoiseMeasurementSnapshot?
+    var masteredNoiseMeasurements: NoiseMeasurementSnapshot?
     var denoiseEffectReport: DenoiseEffectReport?
     var inputSpectrogram: SpectrogramSnapshot?
     var outputSpectrogram: SpectrogramSnapshot?
@@ -57,6 +66,11 @@ final class ProcessingJob {
     var isUsingCustomMasteringSettings = false
     var showAdvancedMasteringSettings = false
     var selectedDenoiseStrength: DenoiseStrength = .balanced
+    var editableCorrectionSettings: CorrectionSettings = DenoiseStrength.balanced.settings
+    var isUsingCustomCorrectionSettings = false
+    var showAdvancedCorrectionSettings = false
+    var appliedCorrectionSettings: CorrectionSettings?
+    var appliedMasteringSettings: MasteringSettings?
     var selectedAnalysisMode: AudioAnalysisMode = .auto
 
     var statusColor: Color {
@@ -95,6 +109,9 @@ final class ProcessingJob {
         inputMetrics = nil
         outputMetrics = nil
         masteredMetrics = nil
+        inputNoiseMeasurements = nil
+        outputNoiseMeasurements = nil
+        masteredNoiseMeasurements = nil
         denoiseEffectReport = nil
         inputSpectrogram = nil
         outputSpectrogram = nil
@@ -112,10 +129,13 @@ final class ProcessingJob {
         completedSteps = []
         masteringActiveStep = nil
         completedMasteringSteps = []
+        appliedCorrectionSettings = nil
+        appliedMasteringSettings = nil
+        applyCorrectionProfile(selectedDenoiseStrength)
         applyMasteringProfile(selectedMasteringProfile)
     }
 
-    func beginProcessing() {
+    func beginProcessing(appliedSettings: CorrectionSettings? = nil) {
         isProcessing = true
         lastError = nil
         logText = ""
@@ -123,7 +143,10 @@ final class ProcessingJob {
         activeStep = nil
         completedSteps = []
         masteredOutputFile = outputFile.map { MasteringService.defaultOutputURL(for: $0) }
+        outputMetrics = nil
         masteredMetrics = nil
+        outputNoiseMeasurements = nil
+        masteredNoiseMeasurements = nil
         denoiseEffectReport = nil
         outputSpectrogram = nil
         masteredSpectrogram = nil
@@ -133,9 +156,11 @@ final class ProcessingJob {
         hasExistingMasteredOutput = false
         masteringActiveStep = nil
         completedMasteringSteps = []
+        appliedCorrectionSettings = nil
+        appliedMasteringSettings = nil
     }
 
-    func beginMastering() {
+    func beginMastering(appliedSettings: MasteringSettings? = nil) {
         guard outputFile != nil else { return }
         isMastering = true
         masteringLastError = nil
@@ -143,6 +168,9 @@ final class ProcessingJob {
         masteringStatusMessage = "マスタリング中"
         masteringActiveStep = nil
         completedMasteringSteps = []
+        masteredMetrics = nil
+        masteredNoiseMeasurements = nil
+        appliedMasteringSettings = nil
     }
 
     func applyMasteringProfile(_ profile: MasteringProfile) {
@@ -160,6 +188,22 @@ final class ProcessingJob {
         isUsingCustomMasteringSettings = true
     }
 
+    func applyCorrectionProfile(_ profile: DenoiseStrength) {
+        selectedDenoiseStrength = profile
+        editableCorrectionSettings = profile.settings
+        isUsingCustomCorrectionSettings = false
+    }
+
+    func resetCorrectionSettingsToProfile() {
+        applyCorrectionProfile(selectedDenoiseStrength)
+    }
+
+    func updateCorrectionSettings(_ update: (inout CorrectionSettings) -> Void) {
+        update(&editableCorrectionSettings)
+        editableCorrectionSettings.profile = selectedDenoiseStrength
+        isUsingCustomCorrectionSettings = true
+    }
+
     func beginMetricAnalysis() {
         isAnalyzingMetrics = true
     }
@@ -169,14 +213,26 @@ final class ProcessingJob {
         isAnalyzingMetrics = false
     }
 
+    func finishInputNoiseMeasurement(_ measurements: NoiseMeasurementSnapshot) {
+        inputNoiseMeasurements = measurements
+    }
+
     func finishOutputMetricAnalysis(_ metrics: AudioMetricSnapshot) {
         outputMetrics = metrics
         isAnalyzingMetrics = false
     }
 
+    func finishOutputNoiseMeasurement(_ measurements: NoiseMeasurementSnapshot) {
+        outputNoiseMeasurements = measurements
+    }
+
     func finishMasteredMetricAnalysis(_ metrics: AudioMetricSnapshot) {
         masteredMetrics = metrics
         isAnalyzingMetrics = false
+    }
+
+    func finishMasteredNoiseMeasurement(_ measurements: NoiseMeasurementSnapshot) {
+        masteredNoiseMeasurements = measurements
     }
 
     func finishInputSpectrogram(_ snapshot: SpectrogramSnapshot) {
@@ -220,7 +276,7 @@ final class ProcessingJob {
         }
     }
 
-    func finishSuccess(_ outputURL: URL) {
+    func finishSuccess(_ outputURL: URL, appliedSettings: CorrectionSettings? = nil) {
         isProcessing = false
         outputFile = outputURL
         masteredOutputFile = nil
@@ -229,15 +285,17 @@ final class ProcessingJob {
         completedSteps = Set(ProcessingStep.allCases)
         activeStep = nil
         masteringStatusMessage = hasExistingOutput ? "実行できます" : "補正後に実行できます"
+        appliedCorrectionSettings = appliedSettings ?? appliedCorrectionSettings ?? editableCorrectionSettings
     }
 
-    func finishMasteringSuccess(_ outputURL: URL) {
+    func finishMasteringSuccess(_ outputURL: URL, appliedSettings: MasteringSettings? = nil) {
         isMastering = false
         masteredOutputFile = outputURL
         masteringStatusMessage = "完了"
         hasExistingMasteredOutput = FileManager.default.fileExists(atPath: outputURL.path(percentEncoded: false))
         completedMasteringSteps = Set(MasteringStep.allCases)
         masteringActiveStep = nil
+        appliedMasteringSettings = appliedSettings ?? appliedMasteringSettings ?? editableMasteringSettings
     }
 
     func finishCorrectedExport(_ url: URL) {

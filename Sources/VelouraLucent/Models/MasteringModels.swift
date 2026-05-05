@@ -213,6 +213,7 @@ enum MasteringStep: String, CaseIterable, Hashable {
     case deEss = "ハーシュネスを抑えます"
     case dynamics = "帯域のバランスを整えます"
     case saturate = "音の密度を整えます"
+    case air = "空気感を整えます"
     case stereo = "ステレオ幅を整えます"
     case loudness = "ラウドネスを整えます"
     case save = "マスタリング済みファイルを書き出します"
@@ -229,6 +230,8 @@ enum MasteringStep: String, CaseIterable, Hashable {
             return "帯域制御"
         case .saturate:
             return "密度調整"
+        case .air:
+            return "空気感"
         case .stereo:
             return "ステレオ幅"
         case .loudness:

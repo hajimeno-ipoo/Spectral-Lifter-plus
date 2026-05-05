@@ -124,6 +124,75 @@ enum DenoiseStrength: String, CaseIterable, Identifiable, Sendable {
             return "ノイズをしっかり減らしますが、効き方も強めです"
         }
     }
+
+    var settings: CorrectionSettings {
+        switch self {
+        case .gentle:
+            return CorrectionSettings(
+                profile: self,
+                correctionIntensity: 0.32,
+                originalRetention: 0.78,
+                lowCleanup: 0.34,
+                lowMidCleanup: 0.36,
+                presenceRepair: 0.34,
+                airRepair: 0.36,
+                highNaturalness: 0.62,
+                noiseDetectionSensitivity: 0.36,
+                harmonicRepairAmount: 0.36,
+                foldoverRepairAmount: 0.30,
+                coreProtection: 0.70,
+                stereoProtection: 0.86
+            )
+        case .balanced:
+            return CorrectionSettings(
+                profile: self,
+                correctionIntensity: 0.50,
+                originalRetention: 0.66,
+                lowCleanup: 0.50,
+                lowMidCleanup: 0.50,
+                presenceRepair: 0.50,
+                airRepair: 0.50,
+                highNaturalness: 0.58,
+                noiseDetectionSensitivity: 0.50,
+                harmonicRepairAmount: 0.50,
+                foldoverRepairAmount: 0.50,
+                coreProtection: 0.62,
+                stereoProtection: 0.80
+            )
+        case .strong:
+            return CorrectionSettings(
+                profile: self,
+                correctionIntensity: 0.72,
+                originalRetention: 0.54,
+                lowCleanup: 0.68,
+                lowMidCleanup: 0.64,
+                presenceRepair: 0.58,
+                airRepair: 0.58,
+                highNaturalness: 0.70,
+                noiseDetectionSensitivity: 0.70,
+                harmonicRepairAmount: 0.62,
+                foldoverRepairAmount: 0.58,
+                coreProtection: 0.72,
+                stereoProtection: 0.76
+            )
+        }
+    }
+}
+
+struct CorrectionSettings: Sendable, Equatable {
+    var profile: DenoiseStrength
+    var correctionIntensity: Float
+    var originalRetention: Float
+    var lowCleanup: Float
+    var lowMidCleanup: Float
+    var presenceRepair: Float
+    var airRepair: Float
+    var highNaturalness: Float
+    var noiseDetectionSensitivity: Float
+    var harmonicRepairAmount: Float
+    var foldoverRepairAmount: Float
+    var coreProtection: Float
+    var stereoProtection: Float
 }
 
 struct AudioMetricSnapshot: Sendable {
@@ -161,63 +230,71 @@ struct DenoiseEffectReport: Sendable, Equatable {
     )
 }
 
-enum NoiseReturnSeverity: Sendable, Equatable {
-    case ok
+struct NoiseMeasurementSnapshot: Sendable, Equatable {
+    let values: [NoiseMeasurementValue]
+
+    func value(for id: String) -> NoiseMeasurementValue? {
+        values.first { $0.id == id }
+    }
+}
+
+struct NoiseMeasurementValue: Sendable, Equatable, Identifiable {
+    let id: String
+    let label: String
+    let comparableLevelDB: Double
+    let measuredLevelDB: Double
+}
+
+enum NoiseCheckSeverity: Sendable, Equatable {
+    case low
     case caution
     case warning
 }
 
-struct NoiseReturnReport: Sendable, Equatable {
-    let rows: [NoiseReturnRow]
+struct NoiseCheckReport: Sendable, Equatable {
+    let rows: [NoiseCheckRow]
 
-    var primaryRow: NoiseReturnRow? {
-        rows.max { lhs, rhs in
-            if lhs.severity.rank != rhs.severity.rank {
-                return lhs.severity.rank < rhs.severity.rank
-            }
-            return lhs.returnAmountScore < rhs.returnAmountScore
-        }
-    }
-
-    var severity: NoiseReturnSeverity {
+    var severity: NoiseCheckSeverity {
         if rows.contains(where: { $0.severity == .warning }) {
             return .warning
         }
         if rows.contains(where: { $0.severity == .caution }) {
             return .caution
         }
-        return .ok
+        return .low
     }
 }
 
-struct NoiseReturnRow: Sendable, Equatable, Identifiable {
+struct NoiseCheckRow: Sendable, Equatable, Identifiable {
     let id: String
     let label: String
-    let denoiseDeltaDB: Double
-    let masteringDeltaDB: Double
-    let returnRatePercent: Double?
-    let severity: NoiseReturnSeverity
-
-    var masteredDeltaFromInputDB: Double {
-        denoiseDeltaDB + masteringDeltaDB
-    }
-
-    var returnAmountScore: Double {
-        max(returnRatePercent ?? 0, masteringDeltaDB * 100)
-    }
+    let input: NoiseCheckValue?
+    let corrected: NoiseCheckValue?
+    let mastered: NoiseCheckValue?
+    let correctionDeltaDB: Double?
+    let masteringDeltaDB: Double?
+    let severity: NoiseCheckSeverity
+    let correctionEffectText: String
+    let masteringEffectText: String
+    let recommendedActions: [NoiseCheckAction]
 }
 
-private extension NoiseReturnSeverity {
-    var rank: Int {
-        switch self {
-        case .ok:
-            return 0
-        case .caution:
-            return 1
-        case .warning:
-            return 2
-        }
+struct NoiseCheckAction: Sendable, Equatable, Identifiable {
+    enum Stage: String, Sendable, Equatable {
+        case correction
+        case mastering
     }
+
+    let id: String
+    let stage: Stage
+    let title: String
+    let detail: String
+}
+
+struct NoiseCheckValue: Sendable, Equatable {
+    let levelDB: Double
+    let measuredLevelDB: Double
+    let severity: NoiseCheckSeverity
 }
 
 struct BandEnergyMetric: Sendable, Identifiable {

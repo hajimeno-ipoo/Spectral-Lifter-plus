@@ -122,4 +122,87 @@ struct ProcessingJobTests {
         #expect(job.isUsingCustomMasteringSettings == false)
         #expect(job.editableMasteringSettings == MasteringProfile.natural.settings)
     }
+
+    @Test
+    func applyingCorrectionProfileResetsEditableSettings() {
+        let job = ProcessingJob()
+
+        job.updateCorrectionSettings { settings in
+            settings.highNaturalness = 0.9
+        }
+        #expect(job.isUsingCustomCorrectionSettings)
+
+        job.applyCorrectionProfile(.strong)
+
+        #expect(job.isUsingCustomCorrectionSettings == false)
+        #expect(job.selectedDenoiseStrength == .strong)
+        #expect(job.editableCorrectionSettings == DenoiseStrength.strong.settings)
+    }
+
+    @Test
+    func appliedCorrectionSettingsStayFixedAfterEditing() {
+        let job = ProcessingJob()
+        var applied = DenoiseStrength.balanced.settings
+        applied.highNaturalness = 0.58
+
+        job.beginProcessing(appliedSettings: applied)
+        job.updateCorrectionSettings { settings in
+            settings.highNaturalness = 0.90
+        }
+        job.finishSuccess(URL(fileURLWithPath: "/tmp/output.wav"), appliedSettings: applied)
+
+        #expect(job.appliedCorrectionSettings?.highNaturalness == 0.58)
+        #expect(job.editableCorrectionSettings.highNaturalness == 0.90)
+    }
+
+    @Test
+    func appliedMasteringSettingsStayFixedAfterEditing() {
+        let job = ProcessingJob()
+        job.outputFile = URL(fileURLWithPath: "/tmp/output.wav")
+        var applied = MasteringProfile.streaming.settings
+        applied.highShelfGain = 0.48
+
+        job.beginMastering(appliedSettings: applied)
+        job.updateMasteringSettings { settings in
+            settings.highShelfGain = 0.10
+        }
+        job.finishMasteringSuccess(URL(fileURLWithPath: "/tmp/output_mastered.wav"), appliedSettings: applied)
+
+        #expect(job.appliedMasteringSettings?.highShelfGain == 0.48)
+        #expect(job.editableMasteringSettings.highShelfGain == 0.10)
+    }
+
+    @Test
+    func processingClearsOldOutputMetricsUntilNewAnalysisFinishes() {
+        let job = ProcessingJob()
+        job.finishOutputMetricAnalysis(makeSnapshot())
+
+        job.beginProcessing(appliedSettings: DenoiseStrength.balanced.settings)
+
+        #expect(job.outputMetrics == nil)
+        #expect(job.appliedCorrectionSettings == nil)
+    }
+
+    private func makeSnapshot() -> AudioMetricSnapshot {
+        AudioMetricSnapshot(
+            peakDBFS: -1,
+            rmsDBFS: -18,
+            crestFactorDB: 12,
+            loudnessRangeLU: 5,
+            integratedLoudnessLUFS: -18,
+            truePeakDBFS: -1,
+            stereoWidth: 0.5,
+            stereoCorrelation: 0.8,
+            harshnessScore: 0.2,
+            centroidHz: 2_000,
+            hf12Ratio: 0.1,
+            hf16Ratio: 0.04,
+            hf18Ratio: 0.02,
+            bandEnergies: [],
+            masteringBandEnergies: [],
+            shortTermLoudness: [],
+            dynamics: [],
+            averageSpectrum: []
+        )
+    }
 }

@@ -3,7 +3,7 @@ import Testing
 
 struct AudioQualityReportServiceTests {
     @Test
-    func normalMetricsReturnNoItems() {
+    func normalMetricsReturnNoItems() throws {
         let input = makeSnapshot(
             integratedLoudnessLUFS: -18.0,
             truePeakDBFS: -1.0,
@@ -32,18 +32,18 @@ struct AudioQualityReportServiceTests {
             hf18Ratio: 0.04
         )
 
-        let report = AudioQualityReportService.makeReport(
+        let report = try #require(AudioQualityReportService.makeReport(
             input: input,
             corrected: corrected,
             mastered: mastered
-        )
+        ))
 
         #expect(report.items.isEmpty)
         #expect(report.severity == .info)
     }
 
     @Test
-    func riskyChangesReturnJapaneseWarnings() {
+    func riskyChangesReturnJapaneseWarnings() throws {
         let input = makeSnapshot(
             integratedLoudnessLUFS: -18.0,
             truePeakDBFS: -1.0,
@@ -72,19 +72,150 @@ struct AudioQualityReportServiceTests {
             hf18Ratio: 0.09
         )
 
-        let report = AudioQualityReportService.makeReport(
+        let report = try #require(AudioQualityReportService.makeReport(
             input: input,
             corrected: corrected,
             mastered: mastered
-        )
+        ))
 
         #expect(report.severity == .warning)
-        #expect(report.items.contains { $0.title == "補正後の音量感が下がっています" })
+        #expect(report.items.contains { $0.title == "補正後は音量を作らないため音量が下がっています" && $0.severity == .info })
         #expect(report.items.contains { $0.title == "マスタリング後のピークが高すぎます" })
         #expect(report.items.contains { $0.title == "マスタリング後の18kHz以上が増えています" })
         #expect(report.items.contains { $0.title == "補正後のステレオ幅が大きく変わっています" })
         #expect(report.items.contains { $0.title == "マスタリング後の音の起伏が小さくなっています" })
         #expect(report.items.contains { $0.title == "最終版の音量感が大きく上がっています" })
+    }
+
+    @Test
+    func inputOnlyReturnsNil() {
+        let input = makeSnapshot(
+            integratedLoudnessLUFS: -18.0,
+            truePeakDBFS: -1.0,
+            stereoWidth: 0.80,
+            crestFactorDB: 10.0,
+            hf12Ratio: 0.10,
+            hf16Ratio: 0.04,
+            hf18Ratio: 0.02
+        )
+
+        let report = AudioQualityReportService.makeReport(
+            input: input,
+            corrected: nil,
+            mastered: nil
+        )
+
+        #expect(report == nil)
+    }
+
+    @Test
+    func correctedOnlyReturnsNilUntilMasteringFinishes() {
+        let input = makeSnapshot(
+            integratedLoudnessLUFS: -18.0,
+            truePeakDBFS: -1.0,
+            stereoWidth: 0.80,
+            crestFactorDB: 10.0,
+            hf12Ratio: 0.10,
+            hf16Ratio: 0.04,
+            hf18Ratio: 0.02
+        )
+        let corrected = makeSnapshot(
+            integratedLoudnessLUFS: -18.3,
+            truePeakDBFS: -0.8,
+            stereoWidth: 0.86,
+            crestFactorDB: 9.2,
+            hf12Ratio: 0.13,
+            hf16Ratio: 0.06,
+            hf18Ratio: 0.03
+        )
+
+        let report = AudioQualityReportService.makeReport(
+            input: input,
+            corrected: corrected,
+            mastered: nil
+        )
+
+        #expect(report == nil)
+    }
+
+    @Test
+    func correctedLoudnessDropIsInformationalUntilFinalStaysLow() throws {
+        let input = makeSnapshot(
+            integratedLoudnessLUFS: -18.0,
+            truePeakDBFS: -1.2,
+            stereoWidth: 0.80,
+            crestFactorDB: 10.0,
+            hf12Ratio: 0.10,
+            hf16Ratio: 0.04,
+            hf18Ratio: 0.02
+        )
+        let corrected = makeSnapshot(
+            integratedLoudnessLUFS: -20.0,
+            truePeakDBFS: -1.5,
+            stereoWidth: 0.80,
+            crestFactorDB: 10.0,
+            hf12Ratio: 0.10,
+            hf16Ratio: 0.04,
+            hf18Ratio: 0.02
+        )
+        let mastered = makeSnapshot(
+            integratedLoudnessLUFS: -18.1,
+            truePeakDBFS: -0.8,
+            stereoWidth: 0.80,
+            crestFactorDB: 10.0,
+            hf12Ratio: 0.10,
+            hf16Ratio: 0.04,
+            hf18Ratio: 0.02
+        )
+
+        let report = try #require(AudioQualityReportService.makeReport(
+            input: input,
+            corrected: corrected,
+            mastered: mastered
+        ))
+
+        #expect(report.items.count == 1)
+        #expect(report.items.first?.severity == .info)
+    }
+
+    @Test
+    func finalLoudnessDropReturnsCaution() throws {
+        let input = makeSnapshot(
+            integratedLoudnessLUFS: -18.0,
+            truePeakDBFS: -1.2,
+            stereoWidth: 0.80,
+            crestFactorDB: 10.0,
+            hf12Ratio: 0.10,
+            hf16Ratio: 0.04,
+            hf18Ratio: 0.02
+        )
+        let corrected = makeSnapshot(
+            integratedLoudnessLUFS: -20.0,
+            truePeakDBFS: -1.5,
+            stereoWidth: 0.80,
+            crestFactorDB: 10.0,
+            hf12Ratio: 0.10,
+            hf16Ratio: 0.04,
+            hf18Ratio: 0.02
+        )
+        let mastered = makeSnapshot(
+            integratedLoudnessLUFS: -20.0,
+            truePeakDBFS: -0.8,
+            stereoWidth: 0.80,
+            crestFactorDB: 10.0,
+            hf12Ratio: 0.10,
+            hf16Ratio: 0.04,
+            hf18Ratio: 0.02
+        )
+
+        let report = try #require(AudioQualityReportService.makeReport(
+            input: input,
+            corrected: corrected,
+            mastered: mastered
+        ))
+
+        #expect(report.items.contains { $0.title == "最終版の音量感が低めです" && $0.severity == .caution })
+        #expect(report.severity == .caution)
     }
 
     private func makeSnapshot(

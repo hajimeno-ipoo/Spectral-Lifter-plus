@@ -31,6 +31,16 @@ struct MasteringProcessor {
             applySaturation(signal: current, amount: effectiveSaturation(settings.saturationAmount, dynamicsRetention: dynamicsRetention, finishingIntensity: finishingIntensity))
         }
 
+        logger?.log(MasteringStep.air.rawValue)
+        current = measure(label: "空気感", logger: logger) {
+            MasteringAirEnhancer().process(
+                signal: current,
+                analysis: analysis,
+                settings: settings,
+                finishingIntensity: finishingIntensity
+            )
+        }
+
         logger?.log(MasteringStep.stereo.rawValue)
         current = measure(label: "広がり", logger: logger) {
             applyHighReturnGuard(
@@ -43,11 +53,18 @@ struct MasteringProcessor {
 
         logger?.log(MasteringStep.loudness.rawValue)
         return measure(label: "音量", logger: logger) {
-            applyLoudness(
+            let loud = applyLoudness(
                 signal: current,
                 targetLKFS: effectiveTargetLoudness(settings.targetLoudness, dynamicsRetention: dynamicsRetention, finishingIntensity: finishingIntensity),
                 peakCeilingDB: settings.peakCeilingDB
             )
+            let guarded = applyHighReturnGuard(
+                signal: loud,
+                analysis: analysis,
+                settings: settings,
+                finishingIntensity: finishingIntensity
+            )
+            return applyNoiseReturnGuard(signal: guarded, reference: signal)
         }
     }
 
@@ -309,7 +326,7 @@ struct MasteringProcessor {
         guard reduction > 0.001 else { return signal }
 
         let channels = signal.channels.map { channel in
-            let high = SpectralDSP.highPass(channel, cutoff: 10_000, sampleRate: signal.sampleRate)
+            let high = SpectralDSP.highPass(channel, cutoff: 8_000, sampleRate: signal.sampleRate)
             return channel.indices.map { index in
                 channel[index] - high[index] * reduction
             }
@@ -322,10 +339,56 @@ struct MasteringProcessor {
         settings: MasteringSettings,
         finishingIntensity: Float
     ) -> Float {
-        let harshnessPressure = max(0, analysis.harshnessScore - 0.45) * 0.75
-        let airBoostPressure = max(0, settings.highShelfGain - 0.40) * 0.20
-        let finishPressure = max(0, finishingIntensity - 0.55) * 0.10
-        return clamped(harshnessPressure + airBoostPressure + finishPressure, min: 0, max: 0.34)
+        let harshnessPressure = max(0, analysis.harshnessScore - 0.42) * 0.92
+        let airBoostPressure = max(0, settings.highShelfGain - 0.36) * 0.34
+        let finishPressure = max(0, finishingIntensity - 0.52) * 0.18
+        return clamped(harshnessPressure + airBoostPressure + finishPressure, min: 0, max: 0.48)
+    }
+
+    private func applyNoiseReturnGuard(signal: AudioSignal, reference: AudioSignal) -> AudioSignal {
+        var current = adaptiveNoiseLimit(signal: signal, reference: reference, id: "hiss", lower: 5_000, upper: 20_000, allowedReturnDB: -5.5)
+        current = adaptiveNoiseLimit(signal: current, reference: reference, id: "sibilance", lower: 5_000, upper: 20_000, allowedReturnDB: 0.35)
+        current = adaptiveNoiseLimit(signal: current, reference: reference, id: "shimmer", lower: 5_000, upper: 20_000, allowedReturnDB: 0.45)
+        return current
+    }
+
+    private func adaptiveNoiseLimit(
+        signal: AudioSignal,
+        reference: AudioSignal,
+        id: String,
+        lower: Double,
+        upper: Double,
+        allowedReturnDB: Double
+    ) -> AudioSignal {
+        let target = (NoiseMeasurementService.analyze(signal: reference).value(for: id)?.comparableLevelDB ?? -120) + allowedReturnDB
+        var currentSignal = signal
+
+        for _ in 0..<8 {
+            let current = NoiseMeasurementService.analyze(signal: currentSignal).value(for: id)?.comparableLevelDB ?? -120
+            let excessDB = max(0, current - target)
+            guard excessDB > 0.1 else { return currentSignal }
+
+            let gain = powf(10, -Float(min(excessDB * 1.8, 96)) / 20)
+            let sampleRate = currentSignal.sampleRate
+            let channels = mapChannelsConcurrently(currentSignal.channels) {
+                scaleBand(channel: $0, sampleRate: sampleRate, lower: lower, upper: upper, gain: gain)
+            }
+            currentSignal = AudioSignal(channels: channels, sampleRate: sampleRate)
+        }
+
+        return currentSignal
+    }
+
+    private func scaleBand(channel: [Float], sampleRate: Double, lower: Double, upper: Double, gain: Float) -> [Float] {
+        let band = SpectralDSP.lowPass(
+            SpectralDSP.highPass(channel, cutoff: lower, sampleRate: sampleRate),
+            cutoff: min(upper, sampleRate * 0.5 - 100),
+            sampleRate: sampleRate
+        )
+        let reduction = 1 - gain
+        return channel.indices.map { index in
+            channel[index] - band[index] * reduction
+        }
     }
 
     private func applyLoudness(signal: AudioSignal, targetLKFS: Float, peakCeilingDB: Float) -> AudioSignal {
@@ -437,6 +500,40 @@ struct MasteringProcessor {
 
     private func gainDelta(forDB value: Float) -> Float {
         powf(10, value / 20) - 1
+    }
+
+    private func clamped(_ value: Float, min minValue: Float, max maxValue: Float) -> Float {
+        Swift.max(minValue, Swift.min(value, maxValue))
+    }
+}
+
+private struct MasteringAirEnhancer {
+    func process(
+        signal: AudioSignal,
+        analysis: MasteringAnalysis,
+        settings: MasteringSettings,
+        finishingIntensity: Float
+    ) -> AudioSignal {
+        let harshnessGuard = clamped(1 - analysis.harshnessScore * 0.62, min: 0.28, max: 1)
+        let requestedAir = max(0, settings.highShelfGain) * 0.035 + settings.saturationAmount * 0.030
+        let adaptiveAir = clamped(Float((analysis.midBandLevelDB - analysis.highBandLevelDB) / 42), min: 0, max: 0.055)
+        let amount = clamped((requestedAir + adaptiveAir) * (0.55 + finishingIntensity * 0.65) * harshnessGuard, min: 0, max: 0.11)
+        guard amount > 0.001 else { return signal }
+
+        let channels = mapChannelsConcurrently(signal.channels) { channel in
+            let excited = channel.map { tanhf($0 * 2.4) - tanhf($0 * 1.08) }
+            let presence = SpectralDSP.lowPass(
+                SpectralDSP.highPass(excited, cutoff: 5_500, sampleRate: signal.sampleRate),
+                cutoff: 10_000,
+                sampleRate: signal.sampleRate
+            )
+            let air = SpectralDSP.highPass(excited, cutoff: 10_000, sampleRate: signal.sampleRate)
+            return channel.indices.map { index in
+                tanhf(channel[index] + presence[index] * amount * 0.45 + air[index] * amount)
+            }
+        }
+
+        return AudioSignal(channels: channels, sampleRate: signal.sampleRate)
     }
 
     private func clamped(_ value: Float, min minValue: Float, max maxValue: Float) -> Float {

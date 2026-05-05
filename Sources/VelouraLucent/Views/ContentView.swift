@@ -90,32 +90,8 @@ struct ContentView: View {
     }
 
     private var correctionSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("補正")
-                .font(.headline)
-
-            HStack(alignment: .top, spacing: 16) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("ノイズ除去の強さ")
-                        .font(.subheadline.weight(.semibold))
-                    Picker("ノイズ除去の強さ", selection: $job.selectedDenoiseStrength) {
-                        ForEach(DenoiseStrength.allCases) { strength in
-                            Text(strength.title).tag(strength)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .disabled(job.isProcessing)
-                }
-
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("説明")
-                        .font(.subheadline.weight(.semibold))
-                    Text(job.selectedDenoiseStrength.summary)
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-
+        VStack(alignment: .leading, spacing: 14) {
+            CorrectionSettingsPanel(job: job)
             HStack(alignment: .top, spacing: 16) {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("解析モード")
@@ -355,20 +331,22 @@ struct ContentView: View {
                     comparisonBandComparisonCard(input: inputMetrics, corrected: job.outputMetrics, mastered: job.masteredMetrics)
                         .frame(maxWidth: .infinity, alignment: .topLeading)
                 }
-                qualityReportCard(
-                    AudioQualityReportService.makeReport(
+                if let qualityReport = AudioQualityReportService.makeReport(
                         input: inputMetrics,
                         corrected: job.outputMetrics,
                         mastered: job.masteredMetrics
-                    )
-                )
-
-                if let noiseReturnReport = NoiseReturnReportService.makeReport(
-                    denoiseEffect: job.denoiseEffectReport,
-                    corrected: job.outputMetrics,
-                    mastered: job.masteredMetrics
                 ) {
-                    noiseReturnCard(noiseReturnReport)
+                    qualityReportCard(qualityReport)
+                }
+
+                if let noiseCheckReport = NoiseCheckReportService.makeReport(
+                    input: job.inputNoiseMeasurements,
+                    corrected: job.outputNoiseMeasurements,
+                    mastered: job.masteredNoiseMeasurements,
+                    correctionSettings: job.appliedCorrectionSettings ?? job.editableCorrectionSettings,
+                    settings: job.appliedMasteringSettings ?? job.editableMasteringSettings
+                ) {
+                    noiseCheckCard(noiseCheckReport)
                 }
             } else {
                 Text("音声を選ぶと、ここに入力・補正後・最終版の比較がまとめて表示されます。")
@@ -417,107 +395,153 @@ struct ContentView: View {
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
     }
 
-    private func noiseReturnCard(_ report: NoiseReturnReport) -> some View {
-        guard let row = report.primaryRow else {
-            return AnyView(EmptyView())
-        }
-
-        let returnText = row.returnRatePercent.map { String(format: "戻り %.0f%%", $0) } ?? "戻り率なし"
-
-        return AnyView(
-        VStack(alignment: .leading, spacing: 12) {
+    private func noiseCheckCard(_ report: NoiseCheckReport) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("ノイズ状態チェック")
+                    Text("ノイズチェック")
                         .font(.title3.weight(.bold))
-                    Text("代表帯域: \(row.label)。入力、ノイズ除去後、マスタリング後のノイズ感を単純表示します。")
+                    Text("入力、補正後、マスタリング後を同じ音量基準で測り、各ノイズの検出値を判定します。")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Text(noiseReturnSeverityText(report.severity))
+                Text(noiseCheckSeverityText(report.severity))
                     .font(.headline.weight(.semibold))
-                    .foregroundStyle(noiseReturnSeverityColor(report.severity))
+                    .foregroundStyle(noiseCheckSeverityColor(report.severity))
             }
 
-            HStack(spacing: 12) {
-                noiseStateBlock(title: "入力", valueText: "基準", detail: "0.0 dB", tint: .blue)
-                noiseStateBlock(title: "ノイズ除去後", valueText: String(format: "%+.1f dB", row.denoiseDeltaDB), detail: denoiseAmountText(row.denoiseDeltaDB), tint: row.denoiseDeltaDB <= -0.3 ? .green : .secondary)
-                noiseStateBlock(title: "マスタリング後", valueText: String(format: "%+.1f dB", row.masteredDeltaFromInputDB), detail: returnText, tint: noiseReturnSeverityColor(row.severity))
+            VStack(alignment: .leading, spacing: 10) {
+                noiseCheckHeader()
+                ForEach(report.rows) { row in
+                    noiseCheckRow(row)
+                }
             }
-
-            HStack {
-                Text("マスタリングで戻った量")
-                    .font(.callout.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Text(String(format: "%+.1f dB", row.masteringDeltaDB))
-                    .font(.title3.monospacedDigit().weight(.bold))
-                    .foregroundStyle(noiseReturnSeverityColor(row.severity))
-            }
-
-            Text(noiseReturnSummaryText(row))
-                .font(.callout)
-                .foregroundStyle(.secondary)
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
-        )
     }
 
-    private func noiseStateBlock(title: String, valueText: String, detail: String, tint: Color) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title)
+    private func noiseCheckHeader() -> some View {
+        HStack(spacing: 12) {
+            Text("ノイズ種別")
                 .font(.callout.weight(.semibold))
                 .foregroundStyle(.secondary)
-            Text(valueText)
-                .font(.title2.monospacedDigit().weight(.bold))
-                .foregroundStyle(tint)
-            Text(detail)
-                .font(.callout)
+                .frame(width: 160, alignment: .leading)
+            Text("入力")
+                .font(.callout.weight(.semibold))
                 .foregroundStyle(.secondary)
+                .frame(width: 120, alignment: .leading)
+            Text("補正後")
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 120, alignment: .leading)
+            Text("マスタリング後")
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 140, alignment: .leading)
+            Text("変化")
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 160, alignment: .leading)
+            Text("次に触る設定")
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func noiseCheckRow(_ row: NoiseCheckRow) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            Text(row.label)
+                .font(.headline.weight(.semibold))
+                .frame(width: 160, alignment: .leading)
+            noiseCheckValue(row.input)
+                .frame(width: 120, alignment: .leading)
+            noiseCheckValue(row.corrected)
+                .frame(width: 120, alignment: .leading)
+            noiseCheckValue(row.mastered)
+                .frame(width: 140, alignment: .leading)
+            noiseCheckDeltaSummary(row)
+                .frame(width: 160, alignment: .leading)
+            VStack(alignment: .leading, spacing: 4) {
+                if row.recommendedActions.isEmpty {
+                    Text("不要")
+                    Text("数値の戻りが小さいため、追加調整は不要です。")
+                        .font(.caption)
+                } else {
+                    ForEach(row.recommendedActions) { action in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(action.title)
+                            Text(action.detail)
+                                .font(.caption.monospacedDigit())
+                        }
+                    }
+                }
+            }
+            .font(.callout.weight(row.recommendedActions.isEmpty ? .regular : .semibold))
+            .foregroundStyle(row.recommendedActions.isEmpty ? Color.secondary : Color.orange)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
     }
 
-    private func denoiseAmountText(_ value: Double) -> String {
-        if value <= -1.0 {
-            return "しっかり除去"
-        }
-        if value <= -0.3 {
-            return "少し除去"
-        }
-        return "ほぼ変化なし"
-    }
-
-    private func noiseReturnSummaryText(_ row: NoiseReturnRow) -> String {
-        switch row.severity {
-        case .ok:
-            return "マスタリング後も、ノイズ除去の効果は大きく崩れていません。"
-        case .caution:
-            return "マスタリングで少し高域が戻っています。ノイズ感が少し戻る可能性があります。"
-        case .warning:
-            return "マスタリングで高域が大きく戻っています。ノイズ除去の効果が薄れて聞こえる可能性があります。"
+    private func noiseCheckValue(_ value: NoiseCheckValue?) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(value.map { noiseCheckSeverityText($0.severity) } ?? "--")
+                .font(.callout.weight(.bold))
+                .foregroundStyle(noiseCheckSeverityColor(value?.severity ?? .low))
+            Text(value.map { String(format: "%.1f dB", $0.levelDB) } ?? "--")
+                .font(.callout.monospacedDigit().weight(.semibold))
+                .foregroundStyle(.secondary)
+            if let value, abs(value.measuredLevelDB - value.levelDB) >= 0.5 {
+                Text(String(format: "実測 %.1f dB", value.measuredLevelDB))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
-    private func noiseReturnSeverityText(_ severity: NoiseReturnSeverity) -> String {
+    private func noiseCheckDeltaSummary(_ row: NoiseCheckRow) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(row.correctionEffectText)
+                .font(.callout.monospacedDigit().weight(.semibold))
+                .foregroundStyle(noiseDeltaColor(row.correctionDeltaDB, lowerIsBetter: true))
+            Text(row.masteringEffectText)
+                .font(.callout.monospacedDigit().weight(.semibold))
+                .foregroundStyle(noiseDeltaColor(row.masteringDeltaDB, lowerIsBetter: true))
+        }
+    }
+
+    private func formatNoiseDelta(_ value: Double?) -> String {
+        guard let value else { return "--" }
+        return String(format: value >= 0 ? "+%.1f dB" : "%.1f dB", value)
+    }
+
+    private func noiseDeltaColor(_ value: Double?, lowerIsBetter: Bool) -> Color {
+        guard let value, abs(value) >= 0.5 else { return .secondary }
+        if lowerIsBetter {
+            return value < 0 ? .green : .orange
+        }
+        return value > 0 ? .orange : .green
+    }
+
+    private func noiseCheckSeverityText(_ severity: NoiseCheckSeverity) -> String {
         switch severity {
-        case .ok:
-            return "OK"
+        case .low:
+            return "良好"
         case .caution:
-            return "注意"
+            return "やや多め"
         case .warning:
-            return "警告"
+            return "多め"
         }
     }
 
-    private func noiseReturnSeverityColor(_ severity: NoiseReturnSeverity) -> Color {
+    private func noiseCheckSeverityColor(_ severity: NoiseCheckSeverity) -> Color {
         switch severity {
-        case .ok:
+        case .low:
             return .green
         case .caution:
             return .orange
@@ -2068,13 +2092,15 @@ struct ContentView: View {
     private func startCorrectionProcessing() {
         guard let inputFile = job.inputFile else { return }
         let selectionID = inputSelectionID
-        job.beginProcessing()
+        let appliedSettings = job.editableCorrectionSettings
+        job.beginProcessing(appliedSettings: appliedSettings)
 
         Task {
             do {
                 let outputFile = try await AudioProcessingService().process(
                     inputFile: inputFile,
                     denoiseStrength: job.selectedDenoiseStrength,
+                    correctionSettings: appliedSettings,
                     analysisMode: job.selectedAnalysisMode
                 ) { message in
                     Task { @MainActor in
@@ -2086,11 +2112,12 @@ struct ContentView: View {
 
                 await MainActor.run {
                     guard isCurrentInputSelection(selectionID, inputFile: inputFile) else { return }
-                    job.finishSuccess(outputFile)
+                    job.finishSuccess(outputFile, appliedSettings: appliedSettings)
                     preview.preparePreview(for: job.inputFile, target: .input)
                     preview.setPreviewSnapshot(correctedArtifacts.previewSnapshot, for: .corrected, sourceURL: outputFile)
                     preview.preparePreview(for: nil, target: .mastered)
                     job.finishOutputMetricAnalysis(correctedArtifacts.metrics)
+                    job.finishOutputNoiseMeasurement(correctedArtifacts.noiseMeasurements)
                     job.finishOutputSpectrogram(correctedArtifacts.spectrogram)
                 }
             } catch {
@@ -2106,13 +2133,14 @@ struct ContentView: View {
     private func startMasteringProcessing() {
         guard let correctedFile = job.outputFile else { return }
         let selectionID = inputSelectionID
-        job.beginMastering()
+        let appliedSettings = job.editableMasteringSettings
+        job.beginMastering(appliedSettings: appliedSettings)
 
         Task {
             do {
                 let masteredFile = try await MasteringService().process(
                     inputFile: correctedFile,
-                    settings: job.editableMasteringSettings
+                    settings: appliedSettings
                 ) { message in
                     Task { @MainActor in
                         job.appendMasteringLog(message)
@@ -2123,9 +2151,10 @@ struct ContentView: View {
 
                 await MainActor.run {
                     guard isCurrentMasteringSelection(selectionID, correctedFile: correctedFile) else { return }
-                    job.finishMasteringSuccess(masteredFile)
+                    job.finishMasteringSuccess(masteredFile, appliedSettings: appliedSettings)
                     preview.setPreviewSnapshot(masteredArtifacts.previewSnapshot, for: .mastered, sourceURL: masteredFile)
                     job.finishMasteredMetricAnalysis(masteredArtifacts.metrics)
+                    job.finishMasteredNoiseMeasurement(masteredArtifacts.noiseMeasurements)
                     job.finishMasteredSpectrogram(masteredArtifacts.spectrogram)
                 }
             } catch {
@@ -2157,11 +2186,13 @@ struct ContentView: View {
     private struct AudioAnalysisArtifacts: Sendable {
         let previewSnapshot: AudioPreviewSnapshot
         let metrics: AudioMetricSnapshot
+        let noiseMeasurements: NoiseMeasurementSnapshot
         let spectrogram: SpectrogramSnapshot
     }
 
     private struct MetricAnalysisArtifacts: Sendable {
         let metrics: AudioMetricSnapshot
+        let noiseMeasurements: NoiseMeasurementSnapshot
         let spectrogram: SpectrogramSnapshot
     }
 
@@ -2177,12 +2208,15 @@ struct ContentView: View {
                     switch target {
                     case .input:
                         job.finishInputMetricAnalysis(artifacts.metrics)
+                        job.finishInputNoiseMeasurement(artifacts.noiseMeasurements)
                         job.finishInputSpectrogram(artifacts.spectrogram)
                     case .corrected:
                         job.finishOutputMetricAnalysis(artifacts.metrics)
+                        job.finishOutputNoiseMeasurement(artifacts.noiseMeasurements)
                         job.finishOutputSpectrogram(artifacts.spectrogram)
                     case .mastered:
                         job.finishMasteredMetricAnalysis(artifacts.metrics)
+                        job.finishMasteredNoiseMeasurement(artifacts.noiseMeasurements)
                         job.finishMasteredSpectrogram(artifacts.spectrogram)
                     }
                 }
@@ -2200,10 +2234,12 @@ struct ContentView: View {
             let signal = try AudioFileService.loadAudio(from: url)
             async let previewSnapshot = AudioFileService.makePreviewSnapshot(from: signal)
             async let metrics = try await AudioComparisonService.analyzeConcurrently(signal: signal)
+            async let noiseMeasurements = NoiseMeasurementService.analyze(signal: signal)
             async let spectrogram = AudioFileService.makeSpectrogramSnapshot(from: signal)
             return try await AudioAnalysisArtifacts(
                 previewSnapshot: previewSnapshot,
                 metrics: metrics,
+                noiseMeasurements: noiseMeasurements,
                 spectrogram: spectrogram
             )
         }.value
@@ -2213,8 +2249,9 @@ struct ContentView: View {
         try await Task.detached(priority: .utility) {
             let signal = try AudioFileService.loadAudio(from: url)
             async let metrics = try await AudioComparisonService.analyzeConcurrently(signal: signal)
+            async let noiseMeasurements = NoiseMeasurementService.analyze(signal: signal)
             async let spectrogram = AudioFileService.makeSpectrogramSnapshot(from: signal)
-            return try await MetricAnalysisArtifacts(metrics: metrics, spectrogram: spectrogram)
+            return try await MetricAnalysisArtifacts(metrics: metrics, noiseMeasurements: noiseMeasurements, spectrogram: spectrogram)
         }.value
     }
 
