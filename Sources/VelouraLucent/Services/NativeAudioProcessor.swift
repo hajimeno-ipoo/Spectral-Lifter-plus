@@ -1350,13 +1350,14 @@ private struct ShimmerPeakLimiter: Sendable {
     func process(signal: AudioSignal, reference: AudioSignal) -> AudioSignal {
         let attenuationDB = max(0, (settings.correctionIntensity - 0.38) * 42 + (settings.noiseDetectionSensitivity - 0.40) * 8)
         let baseGain = powf(10, -attenuationDB / 20)
+        let referenceMeasurements = NoiseMeasurementService.analyze(signal: reference)
         let channels = mapChannelsConcurrently(signal.channels) {
             processChannel($0, sampleRate: signal.sampleRate, lower: 5_000, upper: 14_000, gain: baseGain)
         }
         let baseLimited = AudioSignal(channels: channels, sampleRate: signal.sampleRate)
         let shimmerLimited = adaptiveLimit(
             signal: baseLimited,
-            reference: reference,
+            referenceMeasurements: referenceMeasurements,
             id: "shimmer",
             lower: 5_000,
             upper: 14_000,
@@ -1364,16 +1365,12 @@ private struct ShimmerPeakLimiter: Sendable {
         )
         return adaptiveLimit(
             signal: shimmerLimited,
-            reference: reference,
+            referenceMeasurements: referenceMeasurements,
             id: "hiss",
             lower: 5_000,
             upper: 20_000,
             improvementDB: targetImprovementDB
         )
-    }
-
-    private func comparableLevel(_ id: String, in signal: AudioSignal) -> Double {
-        NoiseMeasurementService.analyze(signal: signal).value(for: id)?.comparableLevelDB ?? -120
     }
 
     private var targetImprovementDB: Double {
@@ -1384,17 +1381,17 @@ private struct ShimmerPeakLimiter: Sendable {
 
     private func adaptiveLimit(
         signal: AudioSignal,
-        reference: AudioSignal,
+        referenceMeasurements: NoiseMeasurementSnapshot,
         id: String,
         lower: Double,
         upper: Double,
         improvementDB: Double
     ) -> AudioSignal {
-        let target = comparableLevel(id, in: reference) - improvementDB
+        let target = referenceMeasurements.comparableLevel(for: id) - improvementDB
         var currentSignal = signal
 
         for _ in 0..<5 {
-            let current = comparableLevel(id, in: currentSignal)
+            let current = NoiseMeasurementService.analyze(signal: currentSignal).comparableLevel(for: id)
             let excessDB = max(0, current - target)
             guard excessDB > 0.1 else { return currentSignal }
 
@@ -1579,4 +1576,10 @@ private struct PeakSafetyLimiter {
 
 private func clamped(_ value: Float, min minValue: Float, max maxValue: Float) -> Float {
     Swift.min(maxValue, Swift.max(minValue, value))
+}
+
+private extension NoiseMeasurementSnapshot {
+    func comparableLevel(for id: String) -> Double {
+        value(for: id)?.comparableLevelDB ?? -120
+    }
 }

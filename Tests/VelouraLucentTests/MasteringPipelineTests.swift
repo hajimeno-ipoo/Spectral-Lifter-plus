@@ -28,12 +28,14 @@ struct MasteringPipelineTests {
         #expect(logs.values.contains { $0.hasPrefix("解析: ") && $0.hasSuffix("秒") })
         #expect(logs.values.contains { $0.hasPrefix("合計: ") && $0.hasSuffix("秒") })
         let total = try #require(parsedDuration(prefix: "合計: ", from: logs.values))
-        let stagePrefixes = ["解析: ", "音色: ", "ディエッサー: ", "ダイナミクス: ", "倍音: ", "空気感: ", "広がり: ", "音量: ", "保存: "]
+        let stagePrefixes = ["解析: ", "音色: ", "ディエッサー: ", "ダイナミクス: ", "倍音: ", "空気感: ", "広がり: ", "ラウドネス: ", "高域戻りガード: ", "ノイズ戻りガード: ", "保存: "]
         var summedStages = 0.0
         for prefix in stagePrefixes {
             summedStages += try #require(parsedDuration(prefix: prefix, from: logs.values))
         }
         #expect(total + 0.10 >= summedStages)
+        #expect(logs.values.contains(MasteringStep.highReturnGuard.rawValue))
+        #expect(logs.values.contains(MasteringStep.noiseReturnGuard.rawValue))
 
         let written = try AVAudioFile(forReading: output)
         #expect(written.length > 0)

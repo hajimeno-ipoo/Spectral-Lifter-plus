@@ -216,6 +216,8 @@ enum MasteringStep: String, CaseIterable, Hashable {
     case air = "空気感を整えます"
     case stereo = "ステレオ幅を整えます"
     case loudness = "ラウドネスを整えます"
+    case highReturnGuard = "高域戻りを抑えます"
+    case noiseReturnGuard = "ノイズ戻りを抑えます"
     case save = "マスタリング済みファイルを書き出します"
 
     var title: String {
@@ -236,6 +238,10 @@ enum MasteringStep: String, CaseIterable, Hashable {
             return "ステレオ幅"
         case .loudness:
             return "ラウドネス"
+        case .highReturnGuard:
+            return "高域戻り"
+        case .noiseReturnGuard:
+            return "ノイズ戻り"
         case .save:
             return "書き出し"
         }

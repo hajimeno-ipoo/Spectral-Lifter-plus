@@ -52,19 +52,27 @@ struct MasteringProcessor {
         }
 
         logger?.log(MasteringStep.loudness.rawValue)
-        return measure(label: "音量", logger: logger) {
-            let loud = applyLoudness(
+        let loud = measure(label: "ラウドネス", logger: logger) {
+            applyLoudness(
                 signal: current,
                 targetLKFS: effectiveTargetLoudness(settings.targetLoudness, dynamicsRetention: dynamicsRetention, finishingIntensity: finishingIntensity),
                 peakCeilingDB: settings.peakCeilingDB
             )
-            let guarded = applyHighReturnGuard(
+        }
+
+        logger?.log(MasteringStep.highReturnGuard.rawValue)
+        let guarded = measure(label: "高域戻りガード", logger: logger) {
+            applyHighReturnGuard(
                 signal: loud,
                 analysis: analysis,
                 settings: settings,
                 finishingIntensity: finishingIntensity
             )
-            return applyNoiseReturnGuard(signal: guarded, reference: signal)
+        }
+
+        logger?.log(MasteringStep.noiseReturnGuard.rawValue)
+        return measure(label: "ノイズ戻りガード", logger: logger) {
+            applyNoiseReturnGuard(signal: guarded, reference: signal)
         }
     }
 
@@ -346,25 +354,26 @@ struct MasteringProcessor {
     }
 
     private func applyNoiseReturnGuard(signal: AudioSignal, reference: AudioSignal) -> AudioSignal {
-        var current = adaptiveNoiseLimit(signal: signal, reference: reference, id: "hiss", lower: 5_000, upper: 20_000, allowedReturnDB: -5.5)
-        current = adaptiveNoiseLimit(signal: current, reference: reference, id: "sibilance", lower: 5_000, upper: 20_000, allowedReturnDB: 0.35)
-        current = adaptiveNoiseLimit(signal: current, reference: reference, id: "shimmer", lower: 5_000, upper: 20_000, allowedReturnDB: 0.45)
+        let referenceMeasurements = NoiseMeasurementService.analyze(signal: reference)
+        var current = adaptiveNoiseLimit(signal: signal, referenceMeasurements: referenceMeasurements, id: "hiss", lower: 5_000, upper: 20_000, allowedReturnDB: -5.5)
+        current = adaptiveNoiseLimit(signal: current, referenceMeasurements: referenceMeasurements, id: "sibilance", lower: 5_000, upper: 20_000, allowedReturnDB: 0.35)
+        current = adaptiveNoiseLimit(signal: current, referenceMeasurements: referenceMeasurements, id: "shimmer", lower: 5_000, upper: 20_000, allowedReturnDB: 0.45)
         return current
     }
 
     private func adaptiveNoiseLimit(
         signal: AudioSignal,
-        reference: AudioSignal,
+        referenceMeasurements: NoiseMeasurementSnapshot,
         id: String,
         lower: Double,
         upper: Double,
         allowedReturnDB: Double
     ) -> AudioSignal {
-        let target = (NoiseMeasurementService.analyze(signal: reference).value(for: id)?.comparableLevelDB ?? -120) + allowedReturnDB
+        let target = referenceMeasurements.comparableLevel(for: id) + allowedReturnDB
         var currentSignal = signal
 
         for _ in 0..<8 {
-            let current = NoiseMeasurementService.analyze(signal: currentSignal).value(for: id)?.comparableLevelDB ?? -120
+            let current = NoiseMeasurementService.analyze(signal: currentSignal).comparableLevel(for: id)
             let excessDB = max(0, current - target)
             guard excessDB > 0.1 else { return currentSignal }
 
@@ -538,5 +547,11 @@ private struct MasteringAirEnhancer {
 
     private func clamped(_ value: Float, min minValue: Float, max maxValue: Float) -> Float {
         Swift.max(minValue, Swift.min(value, maxValue))
+    }
+}
+
+private extension NoiseMeasurementSnapshot {
+    func comparableLevel(for id: String) -> Double {
+        value(for: id)?.comparableLevelDB ?? -120
     }
 }
