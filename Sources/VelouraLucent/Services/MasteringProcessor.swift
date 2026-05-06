@@ -375,36 +375,71 @@ struct MasteringProcessor {
         if reusedMeasurements {
             logger?.log("ノイズ測定: 既存結果を使用")
         }
-        var current = adaptiveNoiseLimit(signal: signal, referenceMeasurements: referenceMeasurements, id: "hiss", lower: 5_000, upper: 20_000, allowedReturnDB: -5.5)
-        current = adaptiveNoiseLimit(signal: current, referenceMeasurements: referenceMeasurements, id: "sibilance", lower: 5_000, upper: 20_000, allowedReturnDB: 0.35)
-        current = adaptiveNoiseLimit(signal: current, referenceMeasurements: referenceMeasurements, id: "shimmer", lower: 5_000, upper: 20_000, allowedReturnDB: 0.45)
-        return current
+        return adaptiveNoiseLimit(
+            signal: signal,
+            referenceMeasurements: referenceMeasurements,
+            rules: [
+                NoiseReturnRule(id: "hiss", lower: 5_000, upper: 20_000, allowedReturnDB: -5.5),
+                NoiseReturnRule(id: "sibilance", lower: 5_000, upper: 20_000, allowedReturnDB: 0.35),
+                NoiseReturnRule(id: "shimmer", lower: 5_000, upper: 20_000, allowedReturnDB: 0.45)
+            ],
+            logger: logger
+        )
+    }
+
+    private struct NoiseReturnRule {
+        let id: String
+        let lower: Double
+        let upper: Double
+        let allowedReturnDB: Double
     }
 
     private func adaptiveNoiseLimit(
         signal: AudioSignal,
         referenceMeasurements: NoiseMeasurementSnapshot,
-        id: String,
-        lower: Double,
-        upper: Double,
-        allowedReturnDB: Double
+        rules: [NoiseReturnRule],
+        logger: AudioProcessingLogger?,
+        maxPasses: Int = 8
     ) -> AudioSignal {
-        let target = referenceMeasurements.comparableLevel(for: id) + allowedReturnDB
         var currentSignal = signal
+        var measurementCount = 0
 
-        for _ in 0..<8 {
-            let current = NoiseMeasurementService.analyze(signal: currentSignal).comparableLevel(for: id)
-            let excessDB = max(0, current - target)
-            guard excessDB > 0.1 else { return currentSignal }
+        logger?.log("ノイズ戻り: 一括判定を開始")
+        for _ in 0..<maxPasses {
+            let currentMeasurements = NoiseMeasurementService.analyze(signal: currentSignal)
+            measurementCount += 1
+            logger?.log("ノイズ戻り/測定: \(measurementCount)/\(maxPasses)")
 
-            let gain = powf(10, -Float(min(excessDB * 1.8, 96)) / 20)
+            let strongestExcess = rules
+                .map { rule -> (rule: NoiseReturnRule, excessDB: Double) in
+                    let target = referenceMeasurements.comparableLevel(for: rule.id) + rule.allowedReturnDB
+                    let current = currentMeasurements.comparableLevel(for: rule.id)
+                    return (rule, max(0, current - target))
+                }
+                .max { $0.excessDB < $1.excessDB }
+
+            guard let strongestExcess, strongestExcess.excessDB > 0.1 else {
+                logger?.log("ノイズ戻り/測定回数: \(measurementCount)")
+                logger?.log("ノイズ戻り: 完了")
+                return currentSignal
+            }
+
+            let gain = powf(10, -Float(min(strongestExcess.excessDB * 1.8, 96)) / 20)
             let sampleRate = currentSignal.sampleRate
             let channels = mapChannelsConcurrently(currentSignal.channels) {
-                scaleBand(channel: $0, sampleRate: sampleRate, lower: lower, upper: upper, gain: gain)
+                scaleBand(
+                    channel: $0,
+                    sampleRate: sampleRate,
+                    lower: strongestExcess.rule.lower,
+                    upper: strongestExcess.rule.upper,
+                    gain: gain
+                )
             }
             currentSignal = AudioSignal(channels: channels, sampleRate: sampleRate)
         }
 
+        logger?.log("ノイズ戻り/測定回数: \(measurementCount)")
+        logger?.log("ノイズ戻り: 上限回数で終了")
         return currentSignal
     }
 

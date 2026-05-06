@@ -42,6 +42,7 @@ struct NativeAudioProcessorBenchmarkTests {
         #expect(benchmark.totalDurationSeconds >= 0)
         #expect(FileManager.default.fileExists(atPath: outputURL.path()))
         #expect(logs.values.contains { $0.hasPrefix("解析: ") && $0.hasSuffix("秒") })
+        #expect(logs.values.contains("ノイズ除去/STFT再利用: 2回"))
         #expect(logs.values.contains { $0.hasPrefix("ノイズ除去/10-16kHzチラつき: ") && $0.hasSuffix(" dB") })
         #expect(logs.values.contains { $0.hasPrefix("ノイズ除去/12kHz以上: ") && $0.hasSuffix(" dB") })
         #expect(logs.values.contains { $0.hasPrefix("ノイズ除去/16kHz以上: ") && $0.hasSuffix(" dB") })

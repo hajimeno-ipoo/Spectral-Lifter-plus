@@ -207,7 +207,11 @@ struct NativeAudioProcessor {
                 )
             )
         }
-        logDenoiseReport(input: signal, denoised: sibilanceGuarded, logger: logger)
+        logDenoiseReport(
+            before: originalAnalysis.denoiseEffectMetrics,
+            after: postDenoiseAnalysis.denoiseEffectMetrics,
+            logger: logger
+        )
 
         logger?.log("高域を補完します")
         let repaired = measure("harmonicRepair", label: "高域修復", recorder: benchmarkRecorder, logger: logger) {
@@ -276,10 +280,9 @@ struct NativeAudioProcessor {
         return Double(end - start) / 1_000_000_000
     }
 
-    private func logDenoiseReport(input: AudioSignal, denoised: AudioSignal, logger: AudioProcessingLogger?) {
-        guard let logger else { return }
-        let before = DenoiseEffectMetrics(signal: input)
-        let after = DenoiseEffectMetrics(signal: denoised)
+    private func logDenoiseReport(before: DenoiseEffectMetrics?, after: DenoiseEffectMetrics?, logger: AudioProcessingLogger?) {
+        guard let logger, let before, let after else { return }
+        logger.log("ノイズ除去/STFT再利用: 2回")
         logger.log("ノイズ除去/10-16kHzチラつき: \(formatSignedDecibelChange(from: before.shimmerFlicker, to: after.shimmerFlicker))")
         logger.log("ノイズ除去/12kHz以上: \(formatSignedDecibelChange(from: before.hf12Magnitude, to: after.hf12Magnitude))")
         logger.log("ノイズ除去/16kHz以上: \(formatSignedDecibelChange(from: before.hf16Magnitude, to: after.hf16Magnitude))")
@@ -292,78 +295,6 @@ struct NativeAudioProcessor {
         }
         let decibels = 20 * log10(Double(max(after, 1e-9) / before))
         return String(format: "%+.1f dB", decibels)
-    }
-}
-
-private struct DenoiseEffectMetrics {
-    let shimmerFlicker: Float
-    let hf12Magnitude: Float
-    let hf16Magnitude: Float
-    let hf18Magnitude: Float
-
-    init(signal: AudioSignal) {
-        let spectrogram = SpectralDSP.stft(signal.monoMixdown())
-        guard spectrogram.frameCount > 0, spectrogram.binCount > 0 else {
-            shimmerFlicker = 0
-            hf12Magnitude = 0
-            hf16Magnitude = 0
-            hf18Magnitude = 0
-            return
-        }
-
-        let frequencyStep = signal.sampleRate / Double(spectrogram.fftSize)
-        let shimmerStart = Self.binIndex(for: 10_000, frequencyStep: frequencyStep, binCount: spectrogram.binCount)
-        let shimmerEnd = Self.binIndex(for: 16_000, frequencyStep: frequencyStep, binCount: spectrogram.binCount)
-        let hf12Start = Self.binIndex(for: 12_000, frequencyStep: frequencyStep, binCount: spectrogram.binCount)
-        let hf16Start = Self.binIndex(for: 16_000, frequencyStep: frequencyStep, binCount: spectrogram.binCount)
-        let hf18Start = Self.binIndex(for: 18_000, frequencyStep: frequencyStep, binCount: spectrogram.binCount)
-
-        var hf12Sum: Float = 0
-        var hf16Sum: Float = 0
-        var hf18Sum: Float = 0
-        var previousShimmerMean: Float?
-        var shimmerMeanSum: Float = 0
-        var shimmerDiffSum: Float = 0
-        var shimmerFrameCount = 0
-
-        for frameIndex in 0..<spectrogram.frameCount {
-            var shimmerEnergy: Float = 0
-            var shimmerCount = 0
-            for binIndex in 0..<spectrogram.binCount {
-                let magnitude = spectrogram.magnitude(frameIndex: frameIndex, binIndex: binIndex)
-                if binIndex >= hf12Start {
-                    hf12Sum += magnitude
-                }
-                if binIndex >= hf16Start {
-                    hf16Sum += magnitude
-                }
-                if binIndex >= hf18Start {
-                    hf18Sum += magnitude
-                }
-                if binIndex >= shimmerStart, binIndex <= shimmerEnd {
-                    shimmerEnergy += magnitude
-                    shimmerCount += 1
-                }
-            }
-
-            let shimmerMean = shimmerEnergy / Float(max(shimmerCount, 1))
-            shimmerMeanSum += shimmerMean
-            if let previousShimmerMean {
-                shimmerDiffSum += abs(shimmerMean - previousShimmerMean)
-            }
-            previousShimmerMean = shimmerMean
-            shimmerFrameCount += 1
-        }
-
-        let frameCount = Float(max(spectrogram.frameCount, 1))
-        hf12Magnitude = hf12Sum / frameCount
-        hf16Magnitude = hf16Sum / frameCount
-        hf18Magnitude = hf18Sum / frameCount
-        shimmerFlicker = shimmerDiffSum / Float(max(shimmerFrameCount - 1, 1))
-    }
-
-    private static func binIndex(for frequency: Double, frequencyStep: Double, binCount: Int) -> Int {
-        min(max(Int(frequency / frequencyStep), 0), binCount - 1)
     }
 }
 
@@ -667,7 +598,8 @@ struct AudioAnalyzer {
                 noiseAmount: 0,
                 rolloffDepth: 0,
                 airBandEnergyRatio: 0,
-                artifactBandRatio: 0
+                artifactBandRatio: 0,
+                denoiseEffectMetrics: DenoiseEffectMetrics(shimmerFlicker: 0, hf12Magnitude: 0, hf16Magnitude: 0, hf18Magnitude: 0)
             )
         }
 
@@ -743,8 +675,63 @@ struct AudioAnalyzer {
             noiseAmount: noiseAmount,
             rolloffDepth: rolloffDepth,
             airBandEnergyRatio: airBandEnergyRatio,
-            artifactBandRatio: artifactBandRatio
+            artifactBandRatio: artifactBandRatio,
+            denoiseEffectMetrics: denoiseEffectMetrics(from: spectrogram, sampleRate: signal.sampleRate)
         )
+    }
+
+    private func denoiseEffectMetrics(from spectrogram: Spectrogram, sampleRate: Double) -> DenoiseEffectMetrics {
+        guard spectrogram.frameCount > 0, spectrogram.binCount > 0 else {
+            return DenoiseEffectMetrics(shimmerFlicker: 0, hf12Magnitude: 0, hf16Magnitude: 0, hf18Magnitude: 0)
+        }
+
+        let frequencyStep = sampleRate / Double(spectrogram.fftSize)
+        let shimmerStart = binIndex(for: 10_000, frequencyStep: frequencyStep, binCount: spectrogram.binCount)
+        let shimmerEnd = binIndex(for: 16_000, frequencyStep: frequencyStep, binCount: spectrogram.binCount)
+        let hf12Start = binIndex(for: 12_000, frequencyStep: frequencyStep, binCount: spectrogram.binCount)
+        let hf16Start = binIndex(for: 16_000, frequencyStep: frequencyStep, binCount: spectrogram.binCount)
+        let hf18Start = binIndex(for: 18_000, frequencyStep: frequencyStep, binCount: spectrogram.binCount)
+
+        var hf12Sum: Float = 0
+        var hf16Sum: Float = 0
+        var hf18Sum: Float = 0
+        var previousShimmerMean: Float?
+        var shimmerDiffSum: Float = 0
+        var shimmerFrameCount = 0
+
+        for frameIndex in 0..<spectrogram.frameCount {
+            var shimmerEnergy: Float = 0
+            var shimmerCount = 0
+            for binIndex in 0..<spectrogram.binCount {
+                let magnitude = spectrogram.magnitude(frameIndex: frameIndex, binIndex: binIndex)
+                if binIndex >= hf12Start { hf12Sum += magnitude }
+                if binIndex >= hf16Start { hf16Sum += magnitude }
+                if binIndex >= hf18Start { hf18Sum += magnitude }
+                if binIndex >= shimmerStart, binIndex <= shimmerEnd {
+                    shimmerEnergy += magnitude
+                    shimmerCount += 1
+                }
+            }
+
+            let shimmerMean = shimmerEnergy / Float(max(shimmerCount, 1))
+            if let previousShimmerMean {
+                shimmerDiffSum += abs(shimmerMean - previousShimmerMean)
+            }
+            previousShimmerMean = shimmerMean
+            shimmerFrameCount += 1
+        }
+
+        let frameCount = Float(max(spectrogram.frameCount, 1))
+        return DenoiseEffectMetrics(
+            shimmerFlicker: shimmerDiffSum / Float(max(shimmerFrameCount - 1, 1)),
+            hf12Magnitude: hf12Sum / frameCount,
+            hf16Magnitude: hf16Sum / frameCount,
+            hf18Magnitude: hf18Sum / frameCount
+        )
+    }
+
+    private func binIndex(for frequency: Double, frequencyStep: Double, binCount: Int) -> Int {
+        min(max(Int(frequency / frequencyStep), 0), binCount - 1)
     }
 
     private func bandEnergy(_ spectrum: [Float], frequencyStep: Double, lower: Double, upper: Double) -> Float {

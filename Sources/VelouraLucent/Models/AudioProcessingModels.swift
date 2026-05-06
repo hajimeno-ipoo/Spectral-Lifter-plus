@@ -63,6 +63,20 @@ struct HarmonicPeak: Sendable {
     let magnitude: Float
 }
 
+struct DenoiseEffectMetrics: Sendable, Equatable {
+    let shimmerFlicker: Float
+    let hf12Magnitude: Float
+    let hf16Magnitude: Float
+    let hf18Magnitude: Float
+
+    init(shimmerFlicker: Float, hf12Magnitude: Float, hf16Magnitude: Float, hf18Magnitude: Float) {
+        self.shimmerFlicker = shimmerFlicker
+        self.hf12Magnitude = hf12Magnitude
+        self.hf16Magnitude = hf16Magnitude
+        self.hf18Magnitude = hf18Magnitude
+    }
+}
+
 struct AnalysisData: Sendable {
     let cutoffFrequency: Double
     let dominantHarmonics: [HarmonicPeak]
@@ -75,6 +89,7 @@ struct AnalysisData: Sendable {
     let rolloffDepth: Float
     let airBandEnergyRatio: Float
     let artifactBandRatio: Float
+    let denoiseEffectMetrics: DenoiseEffectMetrics?
 }
 
 struct NeuralFoldoverFeatures: Sendable {

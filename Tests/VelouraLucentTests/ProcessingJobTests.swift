@@ -231,7 +231,8 @@ struct ProcessingJobTests {
             noiseAmount: 0,
             rolloffDepth: 0,
             airBandEnergyRatio: 0,
-            artifactBandRatio: 0
+            artifactBandRatio: 0,
+            denoiseEffectMetrics: nil
         )
     }
 

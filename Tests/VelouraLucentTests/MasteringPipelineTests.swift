@@ -27,6 +27,11 @@ struct MasteringPipelineTests {
         #expect(logs.values.contains { $0.hasPrefix("解析/ステレオ幅: ") && $0.hasSuffix("秒") })
         #expect(logs.values.contains { $0.hasPrefix("解析: ") && $0.hasSuffix("秒") })
         #expect(logs.values.contains { $0.hasPrefix("合計: ") && $0.hasSuffix("秒") })
+        let noiseReturnMeasurements = try #require(parsedInteger(prefix: "ノイズ戻り/測定回数: ", from: logs.values))
+        #expect(noiseReturnMeasurements <= 8)
+        #expect(logs.values.contains("ノイズ戻り: 一括判定を開始"))
+        #expect(logs.values.contains { $0.hasPrefix("ノイズ戻り/測定: ") })
+        #expect(logs.values.contains("ノイズ戻り: 完了") || logs.values.contains("ノイズ戻り: 上限回数で終了"))
         let total = try #require(parsedDuration(prefix: "合計: ", from: logs.values))
         let stagePrefixes = ["解析: ", "音色: ", "ディエッサー: ", "ダイナミクス: ", "倍音: ", "空気感: ", "広がり: ", "ラウドネス: ", "高域戻りガード: ", "ノイズ戻りガード: ", "保存: "]
         var summedStages = 0.0
@@ -271,4 +276,11 @@ private func parsedDuration(prefix: String, from logs: [String]) -> Double? {
         .replacingOccurrences(of: prefix, with: "")
         .replacingOccurrences(of: "秒", with: "")
     return Double(trimmed)
+}
+
+private func parsedInteger(prefix: String, from logs: [String]) -> Int? {
+    guard let line = logs.first(where: { $0.hasPrefix(prefix) }) else {
+        return nil
+    }
+    return Int(line.dropFirst(prefix.count).trimmingCharacters(in: .whitespacesAndNewlines))
 }
