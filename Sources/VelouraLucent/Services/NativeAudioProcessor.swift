@@ -1489,12 +1489,18 @@ private struct ShimmerPeakLimiter: Sendable {
     ) -> AudioSignal {
         var currentSignal = signal
         var measurementCount = 0
+        var previousExcessDB: Double?
+        let adaptivePasses = min(maxPasses, settings.correctionIntensity >= 0.70 ? 3 : 2)
+        let analysisPlan = shimmerProbePlan(for: signal)
 
         logger?.log("シマー制限: 一括判定を開始")
-        for _ in 0..<maxPasses {
-            let currentMeasurements = NoiseMeasurementService.analyze(signal: currentSignal)
+        if analysisPlan.usesRepresentativeWindows {
+            logger?.log("シマー制限/軽量測定: \(analysisPlan.selectedWindowCount)/\(analysisPlan.totalWindowCount)区間")
+        }
+        for _ in 0..<adaptivePasses {
+            let currentMeasurements = shimmerProbe(signal: currentSignal, plan: analysisPlan)
             measurementCount += 1
-            logger?.log("シマー制限/測定: \(measurementCount)/\(maxPasses)")
+            logger?.log("シマー制限/測定: \(measurementCount)/\(adaptivePasses)")
 
             let strongestExcess = rules
                 .map { rule -> (rule: AdaptiveRule, excessDB: Double) in
@@ -1506,11 +1512,18 @@ private struct ShimmerPeakLimiter: Sendable {
 
             guard let strongestExcess, strongestExcess.excessDB > 0.1 else {
                 logger?.log("シマー制限/測定回数: \(measurementCount)")
+                logger?.log("シマー制限: 目標到達")
                 logger?.log("シマー制限: 完了")
                 return currentSignal
             }
+            if let previousExcessDB, previousExcessDB - strongestExcess.excessDB < 0.35 {
+                logger?.log("シマー制限/測定回数: \(measurementCount)")
+                logger?.log("シマー制限: 改善量が小さいため終了")
+                return currentSignal
+            }
+            previousExcessDB = strongestExcess.excessDB
 
-            let gain = powf(10, -Float(min(strongestExcess.excessDB, 72)) / 20)
+            let gain = powf(10, -Float(min(strongestExcess.excessDB * reductionScale, maxReductionPerPassDB)) / 20)
             let sampleRate = currentSignal.sampleRate
             let channels = mapChannelsConcurrently(currentSignal.channels) {
                 processChannel(
@@ -1524,9 +1537,200 @@ private struct ShimmerPeakLimiter: Sendable {
             currentSignal = AudioSignal(channels: channels, sampleRate: sampleRate)
         }
 
+        if settings.correctionIntensity >= 0.65,
+           let finalCorrection = fullRangeCorrection(
+            signal: currentSignal,
+            referenceMeasurements: referenceMeasurements,
+            rules: rules
+           ) {
+            logger?.log("シマー制限/最終確認: 全体測定")
+            logger?.log("シマー制限: 最終確認で追加補正")
+            let sampleRate = currentSignal.sampleRate
+            let channels = mapChannelsConcurrently(currentSignal.channels) {
+                processChannel(
+                    $0,
+                    sampleRate: sampleRate,
+                    lower: finalCorrection.rule.lower,
+                    upper: finalCorrection.rule.upper,
+                    gain: finalCorrection.gain
+                )
+            }
+            currentSignal = AudioSignal(channels: channels, sampleRate: sampleRate)
+        }
+
         logger?.log("シマー制限/測定回数: \(measurementCount)")
-        logger?.log("シマー制限: 上限回数で終了")
+        logger?.log("シマー制限: 安全上限に到達")
         return currentSignal
+    }
+
+    private func fullRangeCorrection(
+        signal: AudioSignal,
+        referenceMeasurements: NoiseMeasurementSnapshot,
+        rules: [AdaptiveRule]
+    ) -> (rule: AdaptiveRule, gain: Float)? {
+        let currentMeasurements = NoiseMeasurementService.analyze(signal: signal)
+        guard let strongestExcess = rules
+            .map({ rule -> (rule: AdaptiveRule, excessDB: Double) in
+                let target = referenceMeasurements.comparableLevel(for: rule.id) - rule.improvementDB
+                let current = currentMeasurements.comparableLevel(for: rule.id)
+                return (rule, max(0, current - target))
+            })
+            .max(by: { $0.excessDB < $1.excessDB }),
+            strongestExcess.excessDB > 0.1
+        else {
+            return nil
+        }
+        let gain = powf(10, -Float(min(strongestExcess.excessDB * reductionScale, maxReductionPerPassDB)) / 20)
+        return (strongestExcess.rule, gain)
+    }
+
+    private var maxReductionPerPassDB: Double {
+        if settings.correctionIntensity >= 0.70 { return 36 }
+        if settings.correctionIntensity >= 0.50 { return 24 }
+        return 12
+    }
+
+    private var reductionScale: Double {
+        if settings.correctionIntensity >= 0.70 { return 1.25 }
+        if settings.correctionIntensity >= 0.50 { return 1.05 }
+        return 0.85
+    }
+
+    private struct ShimmerProbePlan {
+        let ranges: [Range<Int>]
+        let totalWindowCount: Int
+
+        var selectedWindowCount: Int { ranges.count }
+        var usesRepresentativeWindows: Bool {
+            totalWindowCount > ranges.count
+        }
+    }
+
+    private struct ShimmerProbe {
+        let hiss: Double
+        let shimmer: Double
+
+        func comparableLevel(for id: String) -> Double {
+            switch id {
+            case "hiss": hiss
+            case "shimmer": shimmer
+            default: -120
+            }
+        }
+    }
+
+    private func shimmerProbePlan(for signal: AudioSignal) -> ShimmerProbePlan {
+        let mono = signal.monoMixdown()
+        guard !mono.isEmpty else {
+            return ShimmerProbePlan(ranges: [], totalWindowCount: 0)
+        }
+        let windowSize = max(Int(signal.sampleRate), 1)
+        let totalWindowCount = max(1, Int(ceil(Double(mono.count) / Double(windowSize))))
+        guard totalWindowCount > 45 else {
+            return ShimmerProbePlan(ranges: [mono.indices], totalWindowCount: 1)
+        }
+
+        let probeCount = min(24, totalWindowCount)
+        let selectedCount = min(8, probeCount)
+        let windowStride = max(1, totalWindowCount / probeCount)
+        let candidates = stride(from: 0, to: totalWindowCount, by: windowStride).prefix(probeCount).map { windowIndex in
+            let start = min(windowIndex * windowSize, mono.count)
+            let end = min(start + windowSize, mono.count)
+            return (range: start..<end, score: rmsEnergy(mono[start..<end]))
+        }
+        let selected = candidates
+            .sorted { $0.score > $1.score }
+            .prefix(selectedCount)
+            .map { $0.range }
+            .sorted { $0.lowerBound < $1.lowerBound }
+        return ShimmerProbePlan(ranges: selected, totalWindowCount: totalWindowCount)
+    }
+
+    private func shimmerProbe(signal: AudioSignal, plan: ShimmerProbePlan) -> ShimmerProbe {
+        let mono = signal.monoMixdown()
+        let analysisMono = representativeSamples(from: mono, ranges: plan.ranges)
+        guard !analysisMono.isEmpty else {
+            return ShimmerProbe(hiss: -120, shimmer: -120)
+        }
+
+        let loudness = MasteringAnalysisService.integratedLoudness(
+            signal: AudioSignal(channels: [analysisMono], sampleRate: signal.sampleRate)
+        )
+        let gain = loudness.isFinite && loudness > -69
+            ? powf(10, (-23 - loudness) / 20)
+            : 1
+        let comparable = analysisMono.map { $0 * gain }
+        let hissBand = bandPass(comparable, lower: 8_000, upper: min(20_000, signal.sampleRate * 0.5 - 100), sampleRate: signal.sampleRate)
+        let shimmerBand = bandPass(comparable, lower: 8_000, upper: min(14_000, signal.sampleRate * 0.5 - 100), sampleRate: signal.sampleRate)
+        return ShimmerProbe(
+            hiss: rmsDB(hissBand),
+            shimmer: transientPeakDB(shimmerBand, sampleRate: signal.sampleRate)
+        )
+    }
+
+    private func representativeSamples(from mono: [Float], ranges: [Range<Int>]) -> [Float] {
+        guard !mono.isEmpty else { return [] }
+        guard !(ranges.count == 1 && ranges[0] == mono.indices) else { return mono }
+
+        var samples: [Float] = []
+        samples.reserveCapacity(ranges.reduce(0) { $0 + $1.count })
+        for range in ranges {
+            samples.append(contentsOf: mono[range])
+        }
+        return samples
+    }
+
+    private func bandPass(_ samples: [Float], lower: Double, upper: Double, sampleRate: Double) -> [Float] {
+        guard lower < upper, upper < sampleRate * 0.5 else {
+            return Array(repeating: 0, count: samples.count)
+        }
+        return SpectralDSP.lowPass(
+            SpectralDSP.highPass(samples, cutoff: lower, sampleRate: sampleRate),
+            cutoff: upper,
+            sampleRate: sampleRate
+        )
+    }
+
+    private func transientPeakDB(_ samples: [Float], sampleRate: Double) -> Double {
+        let frameSize = max(128, Int(sampleRate * 0.020))
+        let hopSize = max(64, Int(sampleRate * 0.010))
+        let frames = frameRMS(samples, frameSize: frameSize, hopSize: hopSize)
+        guard frames.count >= 4 else { return rmsDB(samples) }
+        return percentile(frames, 0.95)
+    }
+
+    private func frameRMS(_ samples: [Float], frameSize: Int, hopSize: Int) -> [Double] {
+        guard !samples.isEmpty else { return [] }
+        if samples.count <= frameSize {
+            return [rmsDB(samples)]
+        }
+
+        var values: [Double] = []
+        var start = 0
+        while start + frameSize <= samples.count {
+            values.append(10 * log10(max(rmsEnergy(samples[start..<(start + frameSize)]), 1e-12)))
+            start += hopSize
+        }
+        return values
+    }
+
+    private func rmsDB(_ samples: [Float]) -> Double {
+        guard !samples.isEmpty else { return -120 }
+        return 10 * log10(max(rmsEnergy(samples[...]), 1e-12))
+    }
+
+    private func rmsEnergy(_ samples: ArraySlice<Float>) -> Double {
+        guard !samples.isEmpty else { return 0 }
+        return samples.reduce(0.0) { partial, sample in
+            partial + Double(sample * sample)
+        } / Double(samples.count)
+    }
+
+    private func percentile(_ values: [Double], _ percentile: Double) -> Double {
+        guard !values.isEmpty else { return -120 }
+        let sorted = values.sorted()
+        let index = max(0, min(sorted.count - 1, Int(round(Double(sorted.count - 1) * percentile))))
+        return sorted[index]
     }
 
     private func processChannel(_ channel: [Float], sampleRate: Double, lower: Double, upper: Double, gain: Float) -> [Float] {

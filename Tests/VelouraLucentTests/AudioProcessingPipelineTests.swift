@@ -139,6 +139,36 @@ struct AudioProcessingPipelineTests {
     }
 
     @Test
+    func shimmerLimiterDoesNotUseFiveFullMeasurementPasses() async throws {
+        let tempDirectory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        let inputURL = tempDirectory.appending(path: "shimmer-loop-input.wav")
+        let logs = LogCollector()
+
+        try makeNoisyTone(at: inputURL)
+
+        var settings = DenoiseStrength.strong.settings
+        settings.correctionIntensity = 0.82
+        settings.noiseDetectionSensitivity = 0.82
+        settings.highNaturalness = 0.86
+
+        let output = try await AudioProcessingService().process(
+            inputFile: inputURL,
+            denoiseStrength: .strong,
+            correctionSettings: settings,
+            analysisMode: .cpu
+        ) { message in
+            logs.append(message)
+        }
+
+        let measurementCount = try #require(parsedInteger(prefix: "シマー制限/測定回数: ", from: logs.values))
+        #expect(FileManager.default.fileExists(atPath: output.path()))
+        #expect(measurementCount <= 3)
+        #expect(!logs.values.contains("シマー制限/測定: 4/5"))
+        #expect(!logs.values.contains("シマー制限/測定: 5/5"))
+    }
+
+    @Test
     func maximumLowCleanupKeepsRumbleBandPolarity() async throws {
         let tempDirectory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
@@ -282,6 +312,13 @@ struct AudioProcessingPipelineTests {
             cutoff: upper,
             sampleRate: signal.sampleRate
         )
+    }
+
+    private func parsedInteger(prefix: String, from logs: [String]) -> Int? {
+        logs.compactMap { line -> Int? in
+            guard line.hasPrefix(prefix) else { return nil }
+            return Int(line.dropFirst(prefix.count))
+        }.last
     }
 
 }
