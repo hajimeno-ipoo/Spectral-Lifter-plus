@@ -59,6 +59,80 @@ struct ProcessingJobTests {
     }
 
     @Test
+    func skippedCorrectionRouteUpdatesProgress() {
+        let job = ProcessingJob()
+
+        job.beginProcessing()
+        job.appendLog("ルート/補正: 修復後シマー保護 = スキップ - 高域補修後のシマー危険が低い")
+
+        #expect(job.skippedSteps.contains(.repairShimmerGuard))
+        #expect(job.progressValue > 0)
+    }
+
+    @Test
+    func skippedMasteringRouteUpdatesProgress() {
+        let job = ProcessingJob()
+        job.outputFile = URL(fileURLWithPath: "/tmp/output.wav")
+
+        job.beginMastering()
+        job.appendMasteringLog("ルート/マスタリング: ディエッサー = スキップ - 刺さりとサ行ノイズが低い")
+
+        #expect(job.skippedMasteringSteps.contains(.deEss))
+    }
+
+    @Test
+    func cleanCorrectionRouteKeepsMandatoryStepsRunning() {
+        let plan = CorrectionRoutePlan.make(
+            analysis: makeAnalysis(),
+            noiseMeasurements: makeNoiseSnapshot(
+                hiss: -62,
+                sibilance: 4,
+                shimmer: -50,
+                mud: -12,
+                hum: 2,
+                rumble: -16
+            )
+        )
+
+        #expect(plan.decision(for: .lowNoiseCleanup).action == .skip)
+        #expect(plan.decision(for: .denoise).action == .run)
+        #expect(plan.decision(for: .harmonicRepair).action == .run)
+        #expect(plan.decision(for: .peakSafety).action == .run)
+    }
+
+    @Test
+    func noisyCorrectionRouteDoesNotSkipGuards() {
+        let plan = CorrectionRoutePlan.make(
+            analysis: AnalysisData(
+                cutoffFrequency: 14_000,
+                dominantHarmonics: [],
+                harmonicConfidence: 0.4,
+                hasShimmer: true,
+                shimmerRatio: 0.35,
+                brightnessRatio: 0.4,
+                transientAmount: 0.3,
+                noiseAmount: 0.5,
+                rolloffDepth: 0.2,
+                airBandEnergyRatio: 0.2,
+                artifactBandRatio: 0.25,
+                denoiseEffectMetrics: nil
+            ),
+            noiseMeasurements: makeNoiseSnapshot(
+                hiss: -45,
+                sibilance: 11,
+                shimmer: -35,
+                mud: -3,
+                hum: 9,
+                rumble: -4
+            )
+        )
+
+        #expect(plan.decision(for: .lowNoiseCleanup).action == .run)
+        #expect(plan.decision(for: .sibilanceShimmerGuard).action == .run)
+        #expect(plan.decision(for: .shimmerPeakLimit).action == .run)
+    }
+
+    @Test
     func denoiseEffectReportUpdatesFromLogs() {
         let job = ProcessingJob()
 
@@ -246,5 +320,23 @@ struct ProcessingJobTests {
             harshnessScore: 0.25,
             stereoWidth: 0.8
         )
+    }
+
+    private func makeNoiseSnapshot(
+        hiss: Double,
+        sibilance: Double,
+        shimmer: Double,
+        mud: Double,
+        hum: Double,
+        rumble: Double
+    ) -> NoiseMeasurementSnapshot {
+        NoiseMeasurementSnapshot(values: [
+            NoiseMeasurementValue(id: "hiss", label: "ヒス・シュワシュワ", comparableLevelDB: hiss, measuredLevelDB: hiss),
+            NoiseMeasurementValue(id: "sibilance", label: "サ行・歯擦音", comparableLevelDB: sibilance, measuredLevelDB: sibilance),
+            NoiseMeasurementValue(id: "shimmer", label: "高域のチラつき", comparableLevelDB: shimmer, measuredLevelDB: shimmer),
+            NoiseMeasurementValue(id: "mud", label: "こもり・低いザラつき", comparableLevelDB: mud, measuredLevelDB: mud),
+            NoiseMeasurementValue(id: "hum", label: "ハム・電源ノイズ", comparableLevelDB: hum, measuredLevelDB: hum),
+            NoiseMeasurementValue(id: "rumble", label: "低域ゴロゴロ", comparableLevelDB: rumble, measuredLevelDB: rumble)
+        ])
     }
 }

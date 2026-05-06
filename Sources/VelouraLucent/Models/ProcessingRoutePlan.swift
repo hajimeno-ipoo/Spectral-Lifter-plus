@@ -1,0 +1,236 @@
+import Foundation
+
+enum ProcessingRouteAction: String, Sendable, Equatable {
+    case run
+    case light
+    case skip
+
+    var logTitle: String {
+        switch self {
+        case .run: "実行"
+        case .light: "軽量"
+        case .skip: "スキップ"
+        }
+    }
+}
+
+enum ProcessingRouteRiskLevel: Sendable, Equatable {
+    case low
+    case medium
+    case high
+}
+
+struct ProcessingRouteDecision: Sendable, Equatable {
+    let action: ProcessingRouteAction
+    let reason: String
+    let riskLevel: ProcessingRouteRiskLevel
+}
+
+enum CorrectionRouteStep: CaseIterable, Sendable, Hashable {
+    case lowNoiseCleanup
+    case denoise
+    case sibilanceShimmerGuard
+    case harmonicRepair
+    case repairShimmerGuard
+    case lowMidResidueGuard
+    case shimmerPeakLimit
+    case peakSafety
+
+    var logName: String {
+        switch self {
+        case .lowNoiseCleanup: "低域整理"
+        case .denoise: "ノイズ除去"
+        case .sibilanceShimmerGuard: "サ行保護"
+        case .harmonicRepair: "高域修復"
+        case .repairShimmerGuard: "修復後シマー保護"
+        case .lowMidResidueGuard: "低中域整理"
+        case .shimmerPeakLimit: "シマー制限"
+        case .peakSafety: "ピーク保護"
+        }
+    }
+
+    var processingStep: ProcessingStep {
+        switch self {
+        case .lowNoiseCleanup: .lowNoiseCleanup
+        case .denoise: .denoise
+        case .sibilanceShimmerGuard: .sibilanceShimmerGuard
+        case .harmonicRepair: .harmonicRepair
+        case .repairShimmerGuard: .repairShimmerGuard
+        case .lowMidResidueGuard: .lowMidResidueGuard
+        case .shimmerPeakLimit: .shimmerPeakLimit
+        case .peakSafety: .peakSafety
+        }
+    }
+}
+
+struct CorrectionRoutePlan: Sendable, Equatable {
+    let decisions: [CorrectionRouteStep: ProcessingRouteDecision]
+
+    func decision(for step: CorrectionRouteStep) -> ProcessingRouteDecision {
+        decisions[step] ?? ProcessingRouteDecision(
+            action: .run,
+            reason: "判定がないため安全側で実行",
+            riskLevel: .medium
+        )
+    }
+
+    var runLikeCount: Int {
+        decisions.values.filter { $0.action != .skip }.count
+    }
+
+    static func make(
+        analysis: AnalysisData,
+        noiseMeasurements: NoiseMeasurementSnapshot?
+    ) -> CorrectionRoutePlan {
+        let rumble = noiseMeasurements.level(for: "rumble")
+        let hum = noiseMeasurements.level(for: "hum")
+        let hiss = noiseMeasurements.level(for: "hiss")
+        let shimmer = noiseMeasurements.level(for: "shimmer")
+        let mud = noiseMeasurements.level(for: "mud")
+        let sibilance = noiseMeasurements.level(for: "sibilance")
+
+        let lowNoiseIsQuiet = rumble < -12 && hum < 5
+        let highNoiseIsQuiet = hiss < -58 && shimmer < -46
+        let highNoiseNeedsCare = hiss > -52 || shimmer > -42 || analysis.hasShimmer
+        let lowMidIsClean = mud < -9
+        let sibilanceIsLow = sibilance < 7 && analysis.shimmerRatio < 0.18
+        let repairRiskIsLow = analysis.shimmerRatio < 0.16 && analysis.artifactBandRatio < 0.12
+
+        var decisions: [CorrectionRouteStep: ProcessingRouteDecision] = [
+            .lowNoiseCleanup: lowNoiseIsQuiet
+                ? ProcessingRouteDecision(action: .skip, reason: "低域ノイズとハムが少ない", riskLevel: .low)
+                : ProcessingRouteDecision(action: .run, reason: "低域ノイズまたはハムの確認が必要", riskLevel: .medium),
+            .denoise: ProcessingRouteDecision(action: .run, reason: "ノイズ除去本体は音質の土台になる", riskLevel: .high),
+            .sibilanceShimmerGuard: sibilanceIsLow
+                ? ProcessingRouteDecision(action: .light, reason: "サ行とシマーが少ないため保護を軽くする", riskLevel: .medium)
+                : ProcessingRouteDecision(action: .run, reason: "サ行またはシマーの保護が必要", riskLevel: .medium),
+            .harmonicRepair: ProcessingRouteDecision(action: .run, reason: "高域補修は仕上がり差が大きい", riskLevel: .high),
+            .repairShimmerGuard: repairRiskIsLow
+                ? ProcessingRouteDecision(action: .skip, reason: "高域補修後のシマー危険が低い", riskLevel: .low)
+                : ProcessingRouteDecision(action: .run, reason: "高域補修後のシマー確認が必要", riskLevel: .medium),
+            .lowMidResidueGuard: lowMidIsClean
+                ? ProcessingRouteDecision(action: .skip, reason: "低中域の残りノイズが少ない", riskLevel: .low)
+                : ProcessingRouteDecision(action: .run, reason: "低中域の残りノイズを整える必要がある", riskLevel: .medium),
+            .shimmerPeakLimit: highNoiseIsQuiet
+                ? ProcessingRouteDecision(action: .skip, reason: "ヒスとシマーが少ない", riskLevel: .low)
+                : ProcessingRouteDecision(
+                    action: highNoiseNeedsCare ? .run : .light,
+                    reason: highNoiseNeedsCare ? "高域ノイズの戻りを抑える必要がある" : "高域ノイズは注意域のため軽く抑える",
+                    riskLevel: .medium
+                ),
+            .peakSafety: ProcessingRouteDecision(action: .run, reason: "ピーク保護は安全工程", riskLevel: .high)
+        ]
+
+        for step in CorrectionRouteStep.allCases where decisions[step] == nil {
+            decisions[step] = ProcessingRouteDecision(action: .run, reason: "未分類を避けるため実行", riskLevel: .medium)
+        }
+        return CorrectionRoutePlan(decisions: decisions)
+    }
+}
+
+enum MasteringRouteStep: CaseIterable, Sendable, Hashable {
+    case tone
+    case deEss
+    case dynamics
+    case saturate
+    case air
+    case stereo
+    case loudness
+    case highReturnGuard
+    case noiseReturnGuard
+
+    var logName: String {
+        switch self {
+        case .tone: "音色"
+        case .deEss: "ディエッサー"
+        case .dynamics: "ダイナミクス"
+        case .saturate: "倍音"
+        case .air: "空気感"
+        case .stereo: "ステレオ幅"
+        case .loudness: "ラウドネス"
+        case .highReturnGuard: "高域戻りガード"
+        case .noiseReturnGuard: "ノイズ戻りガード"
+        }
+    }
+
+    var masteringStep: MasteringStep {
+        switch self {
+        case .tone: .tone
+        case .deEss: .deEss
+        case .dynamics: .dynamics
+        case .saturate: .saturate
+        case .air: .air
+        case .stereo: .stereo
+        case .loudness: .loudness
+        case .highReturnGuard: .highReturnGuard
+        case .noiseReturnGuard: .noiseReturnGuard
+        }
+    }
+}
+
+struct MasteringRoutePlan: Sendable, Equatable {
+    let decisions: [MasteringRouteStep: ProcessingRouteDecision]
+
+    func decision(for step: MasteringRouteStep) -> ProcessingRouteDecision {
+        decisions[step] ?? ProcessingRouteDecision(
+            action: .run,
+            reason: "判定がないため安全側で実行",
+            riskLevel: .medium
+        )
+    }
+
+    var runLikeCount: Int {
+        decisions.values.filter { $0.action != .skip }.count
+    }
+
+    static func make(
+        analysis: MasteringAnalysis,
+        settings: MasteringSettings,
+        noiseMeasurements: NoiseMeasurementSnapshot?
+    ) -> MasteringRoutePlan {
+        let hiss = noiseMeasurements.level(for: "hiss")
+        let sibilance = noiseMeasurements.level(for: "sibilance")
+        let shimmer = noiseMeasurements.level(for: "shimmer")
+        let deEssIsUnneeded = analysis.harshnessScore < 0.24 && sibilance < 7
+        let saturationIsOff = settings.saturationAmount < 0.015
+        let airIsEnough = analysis.highBandLevelDB >= analysis.midBandLevelDB - 2.5 && settings.highShelfGain < 0.18
+        let stereoIsClose = abs(settings.stereoWidth - analysis.stereoWidth) < 0.035
+        let highReturnRiskIsLow = analysis.harshnessScore < 0.30 && settings.highShelfGain < 0.34 && shimmer < -44
+        let noiseReturnLooksClean = hiss < -58 && sibilance < 7 && shimmer < -46
+
+        var decisions: [MasteringRouteStep: ProcessingRouteDecision] = [
+            .tone: ProcessingRouteDecision(action: .run, reason: "帯域バランスは仕上げの土台", riskLevel: .high),
+            .deEss: deEssIsUnneeded
+                ? ProcessingRouteDecision(action: .skip, reason: "刺さりとサ行ノイズが低い", riskLevel: .low)
+                : ProcessingRouteDecision(action: .run, reason: "刺さりまたはサ行ノイズを抑える必要がある", riskLevel: .medium),
+            .dynamics: ProcessingRouteDecision(action: .run, reason: "音圧と密度に直結する", riskLevel: .high),
+            .saturate: saturationIsOff
+                ? ProcessingRouteDecision(action: .skip, reason: "倍音設定がほぼゼロ", riskLevel: .low)
+                : ProcessingRouteDecision(action: .run, reason: "倍音設定が有効", riskLevel: .medium),
+            .air: airIsEnough
+                ? ProcessingRouteDecision(action: .skip, reason: "高域が十分あり、持ち上げ設定も弱い", riskLevel: .low)
+                : ProcessingRouteDecision(action: .run, reason: "空気感の補正が必要", riskLevel: .medium),
+            .stereo: stereoIsClose
+                ? ProcessingRouteDecision(action: .skip, reason: "現在の広がりが目標に近い", riskLevel: .low)
+                : ProcessingRouteDecision(action: .run, reason: "ステレオ幅を目標へ近づける", riskLevel: .medium),
+            .loudness: ProcessingRouteDecision(action: .run, reason: "最終音量は必須工程", riskLevel: .high),
+            .highReturnGuard: highReturnRiskIsLow
+                ? ProcessingRouteDecision(action: .skip, reason: "高域戻りリスクが低い", riskLevel: .low)
+                : ProcessingRouteDecision(action: .run, reason: "高域戻りの確認が必要", riskLevel: .medium),
+            .noiseReturnGuard: noiseReturnLooksClean
+                ? ProcessingRouteDecision(action: .light, reason: "入口測定で問題なければ早期終了する", riskLevel: .medium)
+                : ProcessingRouteDecision(action: .run, reason: "ノイズ戻りを通常確認する", riskLevel: .medium)
+        ]
+
+        for step in MasteringRouteStep.allCases where decisions[step] == nil {
+            decisions[step] = ProcessingRouteDecision(action: .run, reason: "未分類を避けるため実行", riskLevel: .medium)
+        }
+        return MasteringRoutePlan(decisions: decisions)
+    }
+}
+
+private extension Optional where Wrapped == NoiseMeasurementSnapshot {
+    func level(for id: String) -> Double {
+        self?.value(for: id)?.comparableLevelDB ?? -120
+    }
+}

@@ -166,19 +166,37 @@ struct NativeAudioProcessor {
                 AudioAnalyzer(mode: resolvedAnalysisMode).analyze(signal: signal)
             }
         }
-        if initialNoiseMeasurements != nil {
+        let routeNoiseMeasurements: NoiseMeasurementSnapshot
+        if let initialNoiseMeasurements {
+            routeNoiseMeasurements = initialNoiseMeasurements
             logger?.log("ノイズ測定: 既存結果を使用")
+        } else {
+            routeNoiseMeasurements = measure("routeNoiseMeasurement", label: "ルート用ノイズ測定", recorder: benchmarkRecorder, logger: logger) {
+                NoiseMeasurementService.analyze(signal: signal)
+            }
         }
+        let routePlan = CorrectionRoutePlan.make(
+            analysis: originalAnalysis,
+            noiseMeasurements: routeNoiseMeasurements
+        )
+        logCorrectionRoutePlan(routePlan, logger: logger)
 
-        logger?.log("低域ノイズを先に整えます")
-        let lowCleaned = measure("lowNoiseCleanup", label: "低域ノイズ", recorder: benchmarkRecorder, logger: logger) {
-            let dehummed = HumRemover(settings: correctionSettings).process(signal: signal)
-            return RumbleReducer(settings: correctionSettings).process(
-                signal: dehummed,
-                reference: signal,
-                referenceMeasurements: initialNoiseMeasurements,
-                logger: logger
-            )
+        let lowNoiseDecision = routePlan.decision(for: .lowNoiseCleanup)
+        let lowCleaned: AudioSignal
+        if lowNoiseDecision.action == .skip {
+            benchmarkRecorder?.append("lowNoiseCleanup", durationSeconds: 0)
+            lowCleaned = signal
+        } else {
+            logger?.log("低域ノイズを先に整えます")
+            lowCleaned = measure("lowNoiseCleanup", label: "低域ノイズ", recorder: benchmarkRecorder, logger: logger) {
+                let dehummed = HumRemover(settings: correctionSettings).process(signal: signal)
+                return RumbleReducer(settings: correctionSettings).process(
+                    signal: dehummed,
+                    reference: signal,
+                    referenceMeasurements: routeNoiseMeasurements,
+                    logger: logger
+                )
+            }
         }
 
         logger?.log("ノイズを除去します")
@@ -186,8 +204,9 @@ struct NativeAudioProcessor {
             SpectralGateDenoiser(settings: correctionSettings).process(signal: lowCleaned)
         }
         logger?.log("サ行保護を行います")
+        let sibilanceScale: Float = routePlan.decision(for: .sibilanceShimmerGuard).action == .light ? 0.55 : 1
         let sibilanceGuarded = measure("sibilanceShimmerGuard", label: "サ行保護", recorder: benchmarkRecorder, logger: logger) {
-            SibilanceShimmerGuard(settings: correctionSettings).process(signal: denoised)
+            SibilanceShimmerGuard(settings: correctionSettings).process(signal: denoised, intensityScale: sibilanceScale)
         }
 
         let postDenoiseAnalysis = measure("analyzeDenoised", label: "再解析", recorder: benchmarkRecorder, logger: logger) {
@@ -222,22 +241,45 @@ struct NativeAudioProcessor {
                 prediction: repairPrediction
             )
         }
-        let repairGuarded = measure("repairShimmerGuard", label: "修復後シマー保護", recorder: benchmarkRecorder, logger: logger) {
-            SibilanceShimmerGuard(settings: correctionSettings).process(signal: repaired)
+        let repairDecision = routePlan.decision(for: .repairShimmerGuard)
+        let repairGuarded: AudioSignal
+        if repairDecision.action == .skip {
+            benchmarkRecorder?.append("repairShimmerGuard", durationSeconds: 0)
+            repairGuarded = repaired
+        } else {
+            logger?.log("修復後シマーを確認します")
+            repairGuarded = measure("repairShimmerGuard", label: "修復後シマー保護", recorder: benchmarkRecorder, logger: logger) {
+                SibilanceShimmerGuard(settings: correctionSettings).process(signal: repaired)
+            }
         }
 
-        logger?.log("低中域の残りを軽く整えます")
-        let residueGuarded = measure("lowMidResidueGuard", label: "低中域残り", recorder: benchmarkRecorder, logger: logger) {
-            LowMidResidueGuard(settings: correctionSettings).process(signal: repairGuarded)
+        let residueDecision = routePlan.decision(for: .lowMidResidueGuard)
+        let residueGuarded: AudioSignal
+        if residueDecision.action == .skip {
+            benchmarkRecorder?.append("lowMidResidueGuard", durationSeconds: 0)
+            residueGuarded = repairGuarded
+        } else {
+            logger?.log("低中域の残りを軽く整えます")
+            residueGuarded = measure("lowMidResidueGuard", label: "低中域残り", recorder: benchmarkRecorder, logger: logger) {
+                LowMidResidueGuard(settings: correctionSettings).process(signal: repairGuarded)
+            }
         }
-        logger?.log("シマーを抑えます")
-        let shimmerLimited = measure("shimmerPeakLimit", label: "シマー制限", recorder: benchmarkRecorder, logger: logger) {
-            ShimmerPeakLimiter(settings: correctionSettings).process(
-                signal: residueGuarded,
-                reference: signal,
-                referenceMeasurements: initialNoiseMeasurements,
-                logger: logger
-            )
+        let shimmerDecision = routePlan.decision(for: .shimmerPeakLimit)
+        let shimmerLimited: AudioSignal
+        if shimmerDecision.action == .skip {
+            benchmarkRecorder?.append("shimmerPeakLimit", durationSeconds: 0)
+            shimmerLimited = residueGuarded
+        } else {
+            logger?.log("シマーを抑えます")
+            shimmerLimited = measure("shimmerPeakLimit", label: "シマー制限", recorder: benchmarkRecorder, logger: logger) {
+                ShimmerPeakLimiter(settings: correctionSettings).process(
+                    signal: residueGuarded,
+                    reference: signal,
+                    referenceMeasurements: routeNoiseMeasurements,
+                    logger: logger,
+                    maxPasses: shimmerDecision.action == .light ? 2 : 5
+                )
+            }
         }
 
         logger?.log("ピークを保護します")
@@ -250,6 +292,8 @@ struct NativeAudioProcessor {
             try AudioFileService.saveAudio(finalized, to: outputFile)
         }
         logger?.log("合計: \(formatProcessingDuration(durationSeconds(since: totalStart)))")
+        logger?.log("ルート/補正/実行工程数: \(routePlan.runLikeCount)/\(CorrectionRouteStep.allCases.count)")
+        logger?.log("ルート/補正/スキップ工程数: \(CorrectionRouteStep.allCases.count - routePlan.runLikeCount)/\(CorrectionRouteStep.allCases.count)")
         logger?.log("処理が完了しました")
 
         return NativeAudioProcessingBenchmark(stages: benchmarkRecorder?.stages ?? [])
@@ -289,6 +333,14 @@ struct NativeAudioProcessor {
         logger.log("ノイズ除去/12kHz以上: \(formatSignedDecibelChange(from: before.hf12Magnitude, to: after.hf12Magnitude))")
         logger.log("ノイズ除去/16kHz以上: \(formatSignedDecibelChange(from: before.hf16Magnitude, to: after.hf16Magnitude))")
         logger.log("ノイズ除去/18kHz以上: \(formatSignedDecibelChange(from: before.hf18Magnitude, to: after.hf18Magnitude))")
+    }
+
+    private func logCorrectionRoutePlan(_ routePlan: CorrectionRoutePlan, logger: AudioProcessingLogger?) {
+        guard let logger else { return }
+        for step in CorrectionRouteStep.allCases {
+            let decision = routePlan.decision(for: step)
+            logger.log("ルート/補正: \(step.logName) = \(decision.action.logTitle) - \(decision.reason)")
+        }
     }
 
     private func formatSignedDecibelChange(from before: Float, to after: Float) -> String {
@@ -532,7 +584,7 @@ private struct RumbleReducer: Sendable {
 private struct SibilanceShimmerGuard: Sendable {
     let settings: CorrectionSettings
 
-    func process(signal: AudioSignal) -> AudioSignal {
+    func process(signal: AudioSignal, intensityScale: Float = 1) -> AudioSignal {
         let defaults = settings.profile.settings
         let intensity = clamped(
             0.28
@@ -541,7 +593,7 @@ private struct SibilanceShimmerGuard: Sendable {
                 + max(0, settings.correctionIntensity - defaults.correctionIntensity) * 0.44,
             min: 0.22,
             max: 0.86
-        )
+        ) * clamped(intensityScale, min: 0.25, max: 1)
         let channels = mapChannelsConcurrently(signal.channels) {
             processChannel($0, sampleRate: signal.sampleRate, intensity: intensity)
         }
@@ -1393,7 +1445,8 @@ private struct ShimmerPeakLimiter: Sendable {
         signal: AudioSignal,
         reference: AudioSignal,
         referenceMeasurements: NoiseMeasurementSnapshot? = nil,
-        logger: AudioProcessingLogger? = nil
+        logger: AudioProcessingLogger? = nil,
+        maxPasses: Int = 5
     ) -> AudioSignal {
         let attenuationDB = max(0, (settings.correctionIntensity - 0.38) * 42 + (settings.noiseDetectionSensitivity - 0.40) * 8)
         let baseGain = powf(10, -attenuationDB / 20)
@@ -1409,7 +1462,8 @@ private struct ShimmerPeakLimiter: Sendable {
                 AdaptiveRule(id: "shimmer", lower: 5_000, upper: 14_000, improvementDB: targetImprovementDB),
                 AdaptiveRule(id: "hiss", lower: 5_000, upper: 20_000, improvementDB: targetImprovementDB)
             ],
-            logger: logger
+            logger: logger,
+            maxPasses: maxPasses
         )
     }
 

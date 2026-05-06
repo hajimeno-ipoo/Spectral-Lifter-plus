@@ -229,7 +229,8 @@ struct ContentView: View {
                 value: job.progressValue,
                 steps: ProcessingStep.allCases,
                 activeStep: job.activeStep,
-                completedSteps: job.completedSteps
+                completedSteps: job.completedSteps,
+                skippedSteps: job.skippedSteps
             )
 
             masteringProgressBlock
@@ -243,7 +244,8 @@ struct ContentView: View {
         value: Double,
         steps: [ProcessingStep],
         activeStep: ProcessingStep?,
-        completedSteps: Set<ProcessingStep>
+        completedSteps: Set<ProcessingStep>,
+        skippedSteps: Set<ProcessingStep>
     ) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
@@ -263,7 +265,8 @@ struct ContentView: View {
                     progressBadge(
                         title: step.title,
                         isCompleted: completedSteps.contains(step),
-                        isActive: activeStep == step
+                        isActive: activeStep == step,
+                        isSkipped: skippedSteps.contains(step)
                     )
                 }
             }
@@ -289,17 +292,18 @@ struct ContentView: View {
                     progressBadge(
                         title: step.title,
                         isCompleted: job.completedMasteringSteps.contains(step),
-                        isActive: job.masteringActiveStep == step
+                        isActive: job.masteringActiveStep == step,
+                        isSkipped: job.skippedMasteringSteps.contains(step)
                     )
                 }
             }
         }
     }
 
-    private func progressBadge(title: String, isCompleted: Bool, isActive: Bool) -> some View {
+    private func progressBadge(title: String, isCompleted: Bool, isActive: Bool, isSkipped: Bool) -> some View {
         HStack(spacing: 6) {
-            Image(systemName: isCompleted ? "checkmark.circle.fill" : isActive ? "dot.circle.fill" : "circle")
-                .foregroundStyle(isCompleted ? Color.green : isActive ? Color.orange : Color.secondary)
+            Image(systemName: isSkipped ? "minus.circle.fill" : isCompleted ? "checkmark.circle.fill" : isActive ? "dot.circle.fill" : "circle")
+                .foregroundStyle(isSkipped ? Color.secondary : isCompleted ? Color.green : isActive ? Color.orange : Color.secondary)
             Text(title)
                 .font(.caption)
         }
@@ -307,7 +311,7 @@ struct ContentView: View {
         .padding(.vertical, 6)
         .background(
             Capsule()
-                .fill(isActive ? Color.orange.opacity(0.14) : isCompleted ? Color.green.opacity(0.14) : Color.secondary.opacity(0.08))
+                .fill(isActive ? Color.orange.opacity(0.14) : isCompleted ? Color.green.opacity(0.14) : Color.secondary.opacity(isSkipped ? 0.14 : 0.08))
         )
     }
 
@@ -2078,8 +2082,9 @@ struct ContentView: View {
         }
         let total = Double(MasteringStep.allCases.count)
         let completed = Double(job.completedMasteringSteps.count)
+        let skipped = Double(job.skippedMasteringSteps.count)
         let activeBoost = job.masteringActiveStep == nil ? 0 : 0.5
-        return min(0.98, (completed + activeBoost) / total)
+        return min(0.98, (completed + skipped + activeBoost) / total)
     }
 
     private var masteringProgressLabel: String {

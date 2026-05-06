@@ -24,6 +24,7 @@ struct NativeAudioProcessorBenchmarkTests {
         let expectedStages = [
             "loadAudio",
             "analyze",
+            "routeNoiseMeasurement",
             "lowNoiseCleanup",
             "denoise",
             "sibilanceShimmerGuard",
@@ -42,6 +43,9 @@ struct NativeAudioProcessorBenchmarkTests {
         #expect(benchmark.totalDurationSeconds >= 0)
         #expect(FileManager.default.fileExists(atPath: outputURL.path()))
         #expect(logs.values.contains { $0.hasPrefix("解析: ") && $0.hasSuffix("秒") })
+        #expect(logs.values.contains { $0.hasPrefix("ルート/補正: 低域整理 = ") })
+        #expect(logs.values.contains { $0.hasPrefix("ルート/補正/実行工程数: ") })
+        #expect(logs.values.contains { $0.hasPrefix("ルート/補正/スキップ工程数: ") })
         #expect(logs.values.contains("ノイズ除去/STFT再利用: 2回"))
         let rumbleMeasurements = try #require(parsedInteger(prefix: "低域ノイズ/測定回数: ", from: logs.values))
         let shimmerMeasurements = try #require(parsedInteger(prefix: "シマー制限/測定回数: ", from: logs.values))
@@ -54,10 +58,10 @@ struct NativeAudioProcessorBenchmarkTests {
         #expect(logs.values.contains { $0.hasPrefix("ノイズ除去/18kHz以上: ") && $0.hasSuffix(" dB") })
         #expect(logs.values.contains { $0.hasPrefix("合計: ") && $0.hasSuffix("秒") })
         let total = try #require(parsedDuration(prefix: "合計: ", from: logs.values))
-        let stagePrefixes = ["読み込み: ", "解析: ", "低域ノイズ: ", "ノイズ除去: ", "サ行保護: ", "再解析: ", "解析補助: ", "高域修復: ", "修復後シマー保護: ", "低中域残り: ", "シマー制限: ", "ピーク保護: ", "書き出し: "]
+        let stagePrefixes = ["読み込み: ", "解析: ", "ルート用ノイズ測定: ", "低域ノイズ: ", "ノイズ除去: ", "サ行保護: ", "再解析: ", "解析補助: ", "高域修復: ", "修復後シマー保護: ", "低中域残り: ", "シマー制限: ", "ピーク保護: ", "書き出し: "]
         var summedStages = 0.0
         for prefix in stagePrefixes {
-            summedStages += try #require(parsedDuration(prefix: prefix, from: logs.values))
+            summedStages += parsedDuration(prefix: prefix, from: logs.values) ?? 0
         }
         #expect(total + 0.10 >= summedStages)
 

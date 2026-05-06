@@ -7,6 +7,7 @@ enum ProcessingStep: String, CaseIterable, Hashable {
     case denoise = "ノイズを除去します"
     case sibilanceShimmerGuard = "サ行保護を行います"
     case harmonicRepair = "高域を補完します"
+    case repairShimmerGuard = "修復後シマーを確認します"
     case lowMidResidueGuard = "低中域の残りを軽く整えます"
     case shimmerPeakLimit = "シマーを抑えます"
     case peakSafety = "ピークを保護します"
@@ -20,6 +21,7 @@ enum ProcessingStep: String, CaseIterable, Hashable {
         case .denoise: "ノイズ除去"
         case .sibilanceShimmerGuard: "サ行保護"
         case .harmonicRepair: "高域修復"
+        case .repairShimmerGuard: "修復後シマー"
         case .lowMidResidueGuard: "低中域整理"
         case .shimmerPeakLimit: "シマー制限"
         case .peakSafety: "ピーク保護"
@@ -61,8 +63,10 @@ final class ProcessingJob {
     var hasExistingMasteredOutput = false
     var activeStep: ProcessingStep?
     var completedSteps: Set<ProcessingStep> = []
+    var skippedSteps: Set<ProcessingStep> = []
     var masteringActiveStep: MasteringStep?
     var completedMasteringSteps: Set<MasteringStep> = []
+    var skippedMasteringSteps: Set<MasteringStep> = []
     var isAnalyzingMetrics = false
     var selectedMasteringProfile: MasteringProfile = .streaming
     var editableMasteringSettings: MasteringSettings = MasteringProfile.streaming.settings
@@ -92,8 +96,9 @@ final class ProcessingJob {
         }
         let total = Double(ProcessingStep.allCases.count)
         let completed = Double(completedSteps.count)
+        let skipped = Double(skippedSteps.count)
         let activeBoost = activeStep == nil ? 0 : 0.5
-        return min(0.98, (completed + activeBoost) / total)
+        return min(0.98, (completed + skipped + activeBoost) / total)
     }
 
     var progressLabel: String {
@@ -133,8 +138,10 @@ final class ProcessingJob {
         hasExistingMasteredOutput = false
         activeStep = nil
         completedSteps = []
+        skippedSteps = []
         masteringActiveStep = nil
         completedMasteringSteps = []
+        skippedMasteringSteps = []
         appliedCorrectionSettings = nil
         appliedMasteringSettings = nil
         applyCorrectionProfile(selectedDenoiseStrength)
@@ -148,6 +155,7 @@ final class ProcessingJob {
         statusMessage = "処理中"
         activeStep = nil
         completedSteps = []
+        skippedSteps = []
         masteredOutputFile = outputFile.map { MasteringService.defaultOutputURL(for: $0) }
         outputMetrics = nil
         masteredMetrics = nil
@@ -163,6 +171,7 @@ final class ProcessingJob {
         hasExistingMasteredOutput = false
         masteringActiveStep = nil
         completedMasteringSteps = []
+        skippedMasteringSteps = []
         appliedCorrectionSettings = nil
         appliedMasteringSettings = nil
     }
@@ -175,6 +184,7 @@ final class ProcessingJob {
         masteringStatusMessage = "マスタリング中"
         masteringActiveStep = nil
         completedMasteringSteps = []
+        skippedMasteringSteps = []
         masteredMetrics = nil
         masteredNoiseMeasurements = nil
         appliedMasteringSettings = nil
@@ -271,6 +281,7 @@ final class ProcessingJob {
         let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         updateProgress(for: trimmed)
+        updateSkippedProgress(for: trimmed)
         updateDenoiseEffectReport(for: trimmed)
 
         if logText.isEmpty {
@@ -284,6 +295,7 @@ final class ProcessingJob {
         let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         updateMasteringProgress(for: trimmed)
+        updateSkippedMasteringProgress(for: trimmed)
 
         if masteringLogText.isEmpty {
             masteringLogText = trimmed
@@ -298,7 +310,7 @@ final class ProcessingJob {
         masteredOutputFile = nil
         statusMessage = "完了"
         hasExistingOutput = FileManager.default.fileExists(atPath: outputURL.path(percentEncoded: false))
-        completedSteps = Set(ProcessingStep.allCases)
+        completedSteps = Set(ProcessingStep.allCases).subtracting(skippedSteps)
         activeStep = nil
         masteringStatusMessage = hasExistingOutput ? "実行できます" : "補正後に実行できます"
         appliedCorrectionSettings = appliedSettings ?? appliedCorrectionSettings ?? editableCorrectionSettings
@@ -309,7 +321,7 @@ final class ProcessingJob {
         masteredOutputFile = outputURL
         masteringStatusMessage = "完了"
         hasExistingMasteredOutput = FileManager.default.fileExists(atPath: outputURL.path(percentEncoded: false))
-        completedMasteringSteps = Set(MasteringStep.allCases)
+        completedMasteringSteps = Set(MasteringStep.allCases).subtracting(skippedMasteringSteps)
         masteringActiveStep = nil
         appliedMasteringSettings = appliedSettings ?? appliedMasteringSettings ?? editableMasteringSettings
     }
@@ -345,7 +357,21 @@ final class ProcessingJob {
         if let activeStep {
             completedSteps.insert(activeStep)
         }
+        skippedSteps.remove(nextStep)
         activeStep = nextStep
+    }
+
+    private func updateSkippedProgress(for message: String) {
+        guard message.hasPrefix("ルート/補正: ") else { return }
+        guard message.contains(" = スキップ - ") else { return }
+        for step in CorrectionRouteStep.allCases where message.hasPrefix("ルート/補正: \(step.logName) = スキップ - ") {
+            skippedSteps.insert(step.processingStep)
+            completedSteps.remove(step.processingStep)
+            if activeStep == step.processingStep {
+                activeStep = nil
+            }
+            return
+        }
     }
 
     private func updateDenoiseEffectReport(for message: String) {
@@ -398,6 +424,20 @@ final class ProcessingJob {
         if let masteringActiveStep {
             completedMasteringSteps.insert(masteringActiveStep)
         }
+        skippedMasteringSteps.remove(nextStep)
         masteringActiveStep = nextStep
+    }
+
+    private func updateSkippedMasteringProgress(for message: String) {
+        guard message.hasPrefix("ルート/マスタリング: ") else { return }
+        guard message.contains(" = スキップ - ") else { return }
+        for step in MasteringRouteStep.allCases where message.hasPrefix("ルート/マスタリング: \(step.logName) = スキップ - ") {
+            skippedMasteringSteps.insert(step.masteringStep)
+            completedMasteringSteps.remove(step.masteringStep)
+            if masteringActiveStep == step.masteringStep {
+                masteringActiveStep = nil
+            }
+            return
+        }
     }
 }

@@ -37,11 +37,20 @@ struct MasteringService {
                     return benchmark.analysis
                 }
             }
+            let routeNoiseMeasurements: NoiseMeasurementSnapshot
+            if let referenceNoiseMeasurements {
+                routeNoiseMeasurements = referenceNoiseMeasurements
+                logger.log("ノイズ測定: 既存結果を使用")
+            } else {
+                routeNoiseMeasurements = recorder.measure(label: "ルート用ノイズ測定", logger: logger) {
+                    NoiseMeasurementService.analyze(signal: signal)
+                }
+            }
             let mastered = MasteringProcessor().process(
                 signal: signal,
                 analysis: analysis,
                 settings: settings,
-                referenceNoiseMeasurements: referenceNoiseMeasurements,
+                referenceNoiseMeasurements: routeNoiseMeasurements,
                 logger: logger
             )
             logger.log(MasteringStep.save.rawValue)
