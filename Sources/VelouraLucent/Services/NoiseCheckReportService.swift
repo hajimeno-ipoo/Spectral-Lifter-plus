@@ -148,9 +148,9 @@ enum NoiseCheckReportService {
             NoiseDefinition(
                 id: "hiss",
                 label: "ヒス・シュワシュワ",
-                cautionDB: -54,
-                warningDB: -48,
-                masteringWorseningCautionDB: 2.0,
+                cautionDB: limit(for: NoiseMeasurementID.hiss).cautionDB,
+                warningDB: limit(for: NoiseMeasurementID.hiss).warningDB,
+                masteringWorseningCautionDB: limit(for: NoiseMeasurementID.hiss).masteringWorseningCautionDB,
                 correctionAction: action(
                     id: "hiss-correction",
                     stage: .correction,
@@ -167,9 +167,9 @@ enum NoiseCheckReportService {
             NoiseDefinition(
                 id: "sibilance",
                 label: "サ行・歯擦音",
-                cautionDB: 8,
-                warningDB: 12,
-                masteringWorseningCautionDB: 2.0,
+                cautionDB: limit(for: NoiseMeasurementID.sibilance).cautionDB,
+                warningDB: limit(for: NoiseMeasurementID.sibilance).warningDB,
+                masteringWorseningCautionDB: limit(for: NoiseMeasurementID.sibilance).masteringWorseningCautionDB,
                 correctionAction: action(
                     id: "sibilance-correction",
                     stage: .correction,
@@ -186,9 +186,9 @@ enum NoiseCheckReportService {
             NoiseDefinition(
                 id: "shimmer",
                 label: "高域のチラつき",
-                cautionDB: -42,
-                warningDB: -36,
-                masteringWorseningCautionDB: 1.5,
+                cautionDB: limit(for: NoiseMeasurementID.shimmer).cautionDB,
+                warningDB: limit(for: NoiseMeasurementID.shimmer).warningDB,
+                masteringWorseningCautionDB: limit(for: NoiseMeasurementID.shimmer).masteringWorseningCautionDB,
                 correctionAction: action(
                     id: "shimmer-correction",
                     stage: .correction,
@@ -205,9 +205,9 @@ enum NoiseCheckReportService {
             NoiseDefinition(
                 id: "mud",
                 label: "こもり・低いザラつき",
-                cautionDB: -7,
-                warningDB: -4,
-                masteringWorseningCautionDB: 1.8,
+                cautionDB: limit(for: NoiseMeasurementID.mud).cautionDB,
+                warningDB: limit(for: NoiseMeasurementID.mud).warningDB,
+                masteringWorseningCautionDB: limit(for: NoiseMeasurementID.mud).masteringWorseningCautionDB,
                 correctionAction: action(
                     id: "mud-correction",
                     stage: .correction,
@@ -224,9 +224,9 @@ enum NoiseCheckReportService {
             NoiseDefinition(
                 id: "hum",
                 label: "ハム・電源ノイズ",
-                cautionDB: 6,
-                warningDB: 10,
-                masteringWorseningCautionDB: 2.0,
+                cautionDB: limit(for: NoiseMeasurementID.hum).cautionDB,
+                warningDB: limit(for: NoiseMeasurementID.hum).warningDB,
+                masteringWorseningCautionDB: limit(for: NoiseMeasurementID.hum).masteringWorseningCautionDB,
                 correctionAction: action(
                     id: "hum-correction",
                     stage: .correction,
@@ -243,9 +243,9 @@ enum NoiseCheckReportService {
             NoiseDefinition(
                 id: "rumble",
                 label: "低域ゴロゴロ",
-                cautionDB: -9,
-                warningDB: -5,
-                masteringWorseningCautionDB: 1.8,
+                cautionDB: limit(for: NoiseMeasurementID.rumble).cautionDB,
+                warningDB: limit(for: NoiseMeasurementID.rumble).warningDB,
+                masteringWorseningCautionDB: limit(for: NoiseMeasurementID.rumble).masteringWorseningCautionDB,
                 correctionAction: action(
                     id: "rumble-correction",
                     stage: .correction,
@@ -262,9 +262,9 @@ enum NoiseCheckReportService {
             NoiseDefinition(
                 id: "room",
                 label: "環境音・部屋鳴り",
-                cautionDB: -42,
-                warningDB: -36,
-                masteringWorseningCautionDB: 2.0,
+                cautionDB: limit(for: NoiseMeasurementID.room).cautionDB,
+                warningDB: limit(for: NoiseMeasurementID.room).warningDB,
+                masteringWorseningCautionDB: limit(for: NoiseMeasurementID.room).masteringWorseningCautionDB,
                 correctionAction: action(
                     id: "room-correction",
                     stage: .correction,
@@ -283,6 +283,15 @@ enum NoiseCheckReportService {
 
     private static func action(id: String, stage: NoiseCheckAction.Stage, title: String, detail: String) -> NoiseCheckAction {
         NoiseCheckAction(id: id, stage: stage, title: title, detail: detail)
+    }
+
+    private static func limit(for id: String) -> NoiseSeverityLimit {
+        InternalAudioJudgementPolicy.severityLimit(for: id) ?? NoiseSeverityLimit(
+            id: id,
+            cautionDB: 0,
+            warningDB: 0,
+            masteringWorseningCautionDB: 2.0
+        )
     }
 
     private static func format(_ value: Float) -> String {

@@ -133,6 +133,32 @@ struct ProcessingJobTests {
     }
 
     @Test
+    func missingCorrectionNoiseMeasurementsDoNotSkipNoiseSensitiveSteps() {
+        let plan = CorrectionRoutePlan.make(
+            analysis: makeAnalysis(),
+            noiseMeasurements: NoiseMeasurementSnapshot(values: [])
+        )
+
+        #expect(plan.decision(for: .lowNoiseCleanup).action == .run)
+        #expect(plan.decision(for: .sibilanceShimmerGuard).action == .run)
+        #expect(plan.decision(for: .lowMidResidueGuard).action == .run)
+        #expect(plan.decision(for: .shimmerPeakLimit).action == .run)
+    }
+
+    @Test
+    func missingMasteringNoiseMeasurementsDoNotSkipNoiseSensitiveSteps() {
+        let plan = MasteringRoutePlan.make(
+            analysis: makeMasteringAnalysis(),
+            settings: MasteringProfile.streaming.settings,
+            noiseMeasurements: NoiseMeasurementSnapshot(values: [])
+        )
+
+        #expect(plan.decision(for: .deEss).action == .run)
+        #expect(plan.decision(for: .highReturnGuard).action == .run)
+        #expect(plan.decision(for: .noiseReturnGuard).action == .run)
+    }
+
+    @Test
     func denoiseEffectReportUpdatesFromLogs() {
         let job = ProcessingJob()
 

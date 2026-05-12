@@ -28,13 +28,13 @@ enum NoiseMeasurementService {
 
     private static var definitions: [(id: String, label: String)] {
         [
-            ("hiss", "ヒス・シュワシュワ"),
-            ("sibilance", "サ行・歯擦音"),
-            ("shimmer", "高域のチラつき"),
-            ("mud", "こもり・低いザラつき"),
-            ("hum", "ハム・電源ノイズ"),
-            ("rumble", "低域ゴロゴロ"),
-            ("room", "環境音・部屋鳴り")
+            (NoiseMeasurementID.hiss, "ヒス・シュワシュワ"),
+            (NoiseMeasurementID.sibilance, "サ行・歯擦音"),
+            (NoiseMeasurementID.shimmer, "高域のチラつき"),
+            (NoiseMeasurementID.mud, "こもり・低いザラつき"),
+            (NoiseMeasurementID.hum, "ハム・電源ノイズ"),
+            (NoiseMeasurementID.rumble, "低域ゴロゴロ"),
+            (NoiseMeasurementID.room, "環境音・部屋鳴り")
         ]
     }
 
@@ -55,13 +55,13 @@ enum NoiseMeasurementService {
         let low = bandPass(mono, lower: 20, upper: 150, sampleRate: sampleRate)
 
         return [
-            "hiss": rmsDB(high),
-            "sibilance": transientExcessDB(band: sibilance, sampleRate: sampleRate),
-            "shimmer": transientPeakDB(band: shimmer, sampleRate: sampleRate),
-            "mud": sustainedBandRatioDB(band: lowMid, fullRMSDB: fullRMS),
-            "hum": humProminenceDB(mono: mono, sampleRate: sampleRate),
-            "rumble": rmsDB(low),
-            "room": quietBandNoiseFloorDB(band: mono, reference: mono, sampleRate: sampleRate)
+            NoiseMeasurementID.hiss: rmsDB(high),
+            NoiseMeasurementID.sibilance: transientExcessDB(band: sibilance, sampleRate: sampleRate),
+            NoiseMeasurementID.shimmer: transientPeakDB(band: shimmer, sampleRate: sampleRate),
+            NoiseMeasurementID.mud: sustainedBandRatioDB(band: lowMid, fullRMSDB: fullRMS),
+            NoiseMeasurementID.hum: humProminenceDB(mono: mono, sampleRate: sampleRate),
+            NoiseMeasurementID.rumble: rmsDB(low),
+            NoiseMeasurementID.room: quietBandNoiseFloorDB(band: mono, reference: mono, sampleRate: sampleRate)
         ]
     }
 

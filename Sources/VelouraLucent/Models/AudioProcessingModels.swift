@@ -251,6 +251,10 @@ struct NoiseMeasurementSnapshot: Sendable, Equatable {
     func value(for id: String) -> NoiseMeasurementValue? {
         values.first { $0.id == id }
     }
+
+    func comparableLevel(for id: String) -> Double? {
+        value(for: id)?.comparableLevelDB
+    }
 }
 
 struct NoiseMeasurementValue: Sendable, Equatable, Identifiable {

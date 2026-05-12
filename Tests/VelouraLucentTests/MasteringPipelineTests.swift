@@ -27,11 +27,13 @@ struct MasteringPipelineTests {
         #expect(logs.values.contains { $0.hasPrefix("解析/ステレオ幅: ") && $0.hasSuffix("秒") })
         #expect(logs.values.contains { $0.hasPrefix("解析: ") && $0.hasSuffix("秒") })
         #expect(logs.values.contains { $0.hasPrefix("合計: ") && $0.hasSuffix("秒") })
-        let noiseReturnMeasurements = try #require(parsedInteger(prefix: "ノイズ戻り/測定回数: ", from: logs.values))
-        #expect(noiseReturnMeasurements <= 8)
+        let noiseReturnProbeCount = try #require(parsedInteger(prefix: "ノイズ戻り/軽量判定回数: ", from: logs.values))
+        let noiseReturnFullCount = parsedInteger(prefix: "ノイズ戻り/最終確認回数: ", from: logs.values) ?? 0
+        #expect(noiseReturnProbeCount <= 8)
+        #expect(noiseReturnFullCount <= 1)
         #expect(logs.values.contains("ノイズ戻り: 一括判定を開始"))
-        #expect(logs.values.contains { $0.hasPrefix("ノイズ戻り/測定: ") })
-        #expect(logs.values.contains("ノイズ戻り: 完了") || logs.values.contains("ノイズ戻り: 上限回数で終了"))
+        #expect(logs.values.contains { $0.hasPrefix("ノイズ戻り/軽量判定: ") })
+        #expect(logs.values.contains("ノイズ戻り: 完了") || logs.values.contains("ノイズ戻り: 安全上限に到達"))
         let total = try #require(parsedDuration(prefix: "合計: ", from: logs.values))
         let stagePrefixes = ["解析: ", "音色: ", "ディエッサー: ", "ダイナミクス: ", "倍音: ", "空気感: ", "広がり: ", "ラウドネス: ", "高域戻りガード: ", "ノイズ戻りガード: ", "保存: "]
         var summedStages = 0.0
@@ -92,6 +94,29 @@ struct MasteringPipelineTests {
 
         #expect(FileManager.default.fileExists(atPath: output.path()))
         #expect(logs.values.contains("ノイズ測定: 既存結果を使用"))
+    }
+
+    @Test
+    func noiseReturnGuardDoesNotUseEightFullMeasurementPasses() async throws {
+        let tempDirectory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        let inputURL = tempDirectory.appending(path: "noise-return-loop.wav")
+        let logs = MasteringLogCollector()
+
+        try makeHarshAirTone(at: inputURL)
+
+        let output = try await MasteringService().process(
+            inputFile: inputURL,
+            profile: .forward
+        ) { message in
+            logs.append(message)
+        }
+
+        let fullMeasurementCount = parsedInteger(prefix: "ノイズ戻り/最終確認回数: ", from: logs.values) ?? 0
+        #expect(FileManager.default.fileExists(atPath: output.path()))
+        #expect(fullMeasurementCount <= 1)
+        #expect(logs.values.contains { $0.hasPrefix("ノイズ戻り/軽量判定: ") })
+        #expect(!logs.values.contains("ノイズ戻り/測定: 8/8"))
     }
 
     @Test
@@ -164,6 +189,52 @@ struct MasteringPipelineTests {
         let afterHigh = try #require(after.bandEnergies.first { $0.id == "high" }?.levelDB)
 
         #expect(afterHigh - after.rmsDBFS <= beforeHigh - before.rmsDBFS + 3.6)
+    }
+
+    @Test
+    func masteringBalancesNoiseGuardWithHighBandPreservation() async throws {
+        let tempDirectory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        let inputURL = tempDirectory.appending(path: "balanced-high-floor.wav")
+        let logs = MasteringLogCollector()
+
+        try makeHarshAirTone(at: inputURL)
+
+        let reference = try AudioFileService.loadAudio(from: inputURL)
+        let output = try await MasteringService().process(inputFile: inputURL, profile: .streaming) { message in
+            logs.append(message)
+        }
+        let mastered = try AudioFileService.loadAudio(from: output)
+
+        let referencePresence = bandRMSDB(signal: reference, lower: 5_000, upper: 10_000)
+        let masteredPresence = bandRMSDB(signal: mastered, lower: 5_000, upper: 10_000)
+        let referenceAir = bandRMSDB(signal: reference, lower: 10_000, upper: 16_000)
+        let masteredAir = bandRMSDB(signal: mastered, lower: 10_000, upper: 16_000)
+
+        #expect(FileManager.default.fileExists(atPath: output.path()))
+        #expect(masteredPresence >= referencePresence - 6.0)
+        #expect(masteredAir >= referenceAir - 7.0)
+        #expect(logs.values.contains { $0.hasPrefix("高域保持: ") } || masteredPresence >= referencePresence - 5.0)
+    }
+
+    @Test
+    func masteringNoiseReturnHissReductionIsBoundedForAudioQuality() {
+        let hissRule = InternalAudioJudgementPolicy.masteringNoiseReturnLimits.first {
+            $0.id == NoiseMeasurementID.hiss
+        }
+
+        #expect(hissRule?.reductionMultiplier == 2.2)
+        #expect(hissRule?.maxReductionDB == 18.0)
+    }
+
+    @Test
+    func shimmerLimiterReductionLimitsStayModerateByCorrectionStrength() {
+        #expect(InternalAudioJudgementPolicy.shimmerMaxReductionPerPassDB(correctionIntensity: 0.72) == 24)
+        #expect(InternalAudioJudgementPolicy.shimmerMaxReductionPerPassDB(correctionIntensity: 0.50) == 12)
+        #expect(InternalAudioJudgementPolicy.shimmerMaxReductionPerPassDB(correctionIntensity: 0.30) == 8)
+        #expect(InternalAudioJudgementPolicy.shimmerReductionScale(correctionIntensity: 0.72) == 1.25)
+        #expect(InternalAudioJudgementPolicy.shimmerReductionScale(correctionIntensity: 0.50) == 0.82)
+        #expect(InternalAudioJudgementPolicy.shimmerReductionScale(correctionIntensity: 0.30) == 0.65)
     }
 
     @Test
@@ -283,4 +354,19 @@ private func parsedInteger(prefix: String, from logs: [String]) -> Int? {
         return nil
     }
     return Int(line.dropFirst(prefix.count).trimmingCharacters(in: .whitespacesAndNewlines))
+}
+
+private func bandRMSDB(signal: AudioSignal, lower: Double, upper: Double) -> Double {
+    let upperBound = min(upper, signal.sampleRate * 0.5 - 100)
+    guard lower < upperBound else { return -120 }
+    let mono = signal.monoMixdown()
+    let band = SpectralDSP.lowPass(
+        SpectralDSP.highPass(mono, cutoff: lower, sampleRate: signal.sampleRate),
+        cutoff: upperBound,
+        sampleRate: signal.sampleRate
+    )
+    let meanSquare = band.reduce(0.0) { partial, sample in
+        partial + Double(sample * sample)
+    } / Double(max(band.count, 1))
+    return 10 * log10(max(meanSquare, 1e-12))
 }

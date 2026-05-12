@@ -517,13 +517,22 @@ private struct RumbleReducer: Sendable {
             return signal
         }
 
-        let measurements = referenceMeasurements ?? NoiseMeasurementService.analyze(signal: reference)
-        let target = measurements.comparableLevel(for: "rumble") - improvementDB
+        let measurements = referenceMeasurements?.comparableLevel(for: NoiseMeasurementID.rumble) == nil
+            ? NoiseMeasurementService.analyze(signal: reference)
+            : referenceMeasurements!
+        guard let referenceRumble = measurements.comparableLevel(for: NoiseMeasurementID.rumble) else {
+            logger?.log("低域ノイズ/測定回数: 0")
+            return signal
+        }
+        let target = referenceRumble - improvementDB
         var currentSignal = signal
         var measurementCount = 0
         for _ in 0..<4 {
             measurementCount += 1
-            let current = NoiseMeasurementService.analyze(signal: currentSignal).value(for: "rumble")?.comparableLevelDB ?? -120
+            guard let current = NoiseMeasurementService.analyze(signal: currentSignal).comparableLevel(for: NoiseMeasurementID.rumble) else {
+                logger?.log("低域ノイズ/測定回数: \(measurementCount)")
+                return currentSignal
+            }
             let excessDB = max(0, current - target)
             guard excessDB > 0.1 else {
                 logger?.log("低域ノイズ/測定回数: \(measurementCount)")
@@ -1450,7 +1459,10 @@ private struct ShimmerPeakLimiter: Sendable {
     ) -> AudioSignal {
         let attenuationDB = max(0, (settings.correctionIntensity - 0.38) * 42 + (settings.noiseDetectionSensitivity - 0.40) * 8)
         let baseGain = powf(10, -attenuationDB / 20)
-        let referenceMeasurements = referenceMeasurements ?? NoiseMeasurementService.analyze(signal: reference)
+        let requiredIDs = [NoiseMeasurementID.shimmer, NoiseMeasurementID.hiss]
+        let referenceMeasurements = requiredIDs.allSatisfy { referenceMeasurements?.comparableLevel(for: $0) != nil }
+            ? referenceMeasurements!
+            : NoiseMeasurementService.analyze(signal: reference)
         let channels = mapChannelsConcurrently(signal.channels) {
             processChannel($0, sampleRate: signal.sampleRate, lower: 5_000, upper: 14_000, gain: baseGain)
         }
@@ -1458,10 +1470,7 @@ private struct ShimmerPeakLimiter: Sendable {
         return adaptiveLimit(
             signal: baseLimited,
             referenceMeasurements: referenceMeasurements,
-            rules: [
-                AdaptiveRule(id: "shimmer", lower: 5_000, upper: 14_000, improvementDB: targetImprovementDB),
-                AdaptiveRule(id: "hiss", lower: 5_000, upper: 20_000, improvementDB: targetImprovementDB)
-            ],
+            rules: InternalAudioJudgementPolicy.shimmerLimitRules(improvementDB: targetImprovementDB),
             logger: logger,
             maxPasses: maxPasses
         )
@@ -1473,17 +1482,10 @@ private struct ShimmerPeakLimiter: Sendable {
         return -0.2
     }
 
-    private struct AdaptiveRule {
-        let id: String
-        let lower: Double
-        let upper: Double
-        let improvementDB: Double
-    }
-
     private func adaptiveLimit(
         signal: AudioSignal,
         referenceMeasurements: NoiseMeasurementSnapshot,
-        rules: [AdaptiveRule],
+        rules: [ShimmerLimitRule],
         logger: AudioProcessingLogger?,
         maxPasses: Int = 5
     ) -> AudioSignal {
@@ -1503,9 +1505,11 @@ private struct ShimmerPeakLimiter: Sendable {
             logger?.log("シマー制限/測定: \(measurementCount)/\(adaptivePasses)")
 
             let strongestExcess = rules
-                .map { rule -> (rule: AdaptiveRule, excessDB: Double) in
-                    let target = referenceMeasurements.comparableLevel(for: rule.id) - rule.improvementDB
-                    let current = currentMeasurements.comparableLevel(for: rule.id)
+                .compactMap { rule -> (rule: ShimmerLimitRule, excessDB: Double)? in
+                    guard let reference = referenceMeasurements.comparableLevel(for: rule.id),
+                          let current = currentMeasurements.comparableLevel(for: rule.id)
+                    else { return nil }
+                    let target = reference - rule.improvementDB
                     return (rule, max(0, current - target))
                 }
                 .max { $0.excessDB < $1.excessDB }
@@ -1529,8 +1533,8 @@ private struct ShimmerPeakLimiter: Sendable {
                 processChannel(
                     $0,
                     sampleRate: sampleRate,
-                    lower: strongestExcess.rule.lower,
-                    upper: strongestExcess.rule.upper,
+                    lower: strongestExcess.rule.lowerFrequency,
+                    upper: strongestExcess.rule.upperFrequency,
                     gain: gain
                 )
             }
@@ -1550,8 +1554,8 @@ private struct ShimmerPeakLimiter: Sendable {
                 processChannel(
                     $0,
                     sampleRate: sampleRate,
-                    lower: finalCorrection.rule.lower,
-                    upper: finalCorrection.rule.upper,
+                    lower: finalCorrection.rule.lowerFrequency,
+                    upper: finalCorrection.rule.upperFrequency,
                     gain: finalCorrection.gain
                 )
             }
@@ -1566,13 +1570,15 @@ private struct ShimmerPeakLimiter: Sendable {
     private func fullRangeCorrection(
         signal: AudioSignal,
         referenceMeasurements: NoiseMeasurementSnapshot,
-        rules: [AdaptiveRule]
-    ) -> (rule: AdaptiveRule, gain: Float)? {
+        rules: [ShimmerLimitRule]
+    ) -> (rule: ShimmerLimitRule, gain: Float)? {
         let currentMeasurements = NoiseMeasurementService.analyze(signal: signal)
         guard let strongestExcess = rules
-            .map({ rule -> (rule: AdaptiveRule, excessDB: Double) in
-                let target = referenceMeasurements.comparableLevel(for: rule.id) - rule.improvementDB
-                let current = currentMeasurements.comparableLevel(for: rule.id)
+            .compactMap({ rule -> (rule: ShimmerLimitRule, excessDB: Double)? in
+                guard let reference = referenceMeasurements.comparableLevel(for: rule.id),
+                      let current = currentMeasurements.comparableLevel(for: rule.id)
+                else { return nil }
+                let target = reference - rule.improvementDB
                 return (rule, max(0, current - target))
             })
             .max(by: { $0.excessDB < $1.excessDB }),
@@ -1585,15 +1591,11 @@ private struct ShimmerPeakLimiter: Sendable {
     }
 
     private var maxReductionPerPassDB: Double {
-        if settings.correctionIntensity >= 0.70 { return 36 }
-        if settings.correctionIntensity >= 0.50 { return 24 }
-        return 12
+        InternalAudioJudgementPolicy.shimmerMaxReductionPerPassDB(correctionIntensity: settings.correctionIntensity)
     }
 
     private var reductionScale: Double {
-        if settings.correctionIntensity >= 0.70 { return 1.25 }
-        if settings.correctionIntensity >= 0.50 { return 1.05 }
-        return 0.85
+        InternalAudioJudgementPolicy.shimmerReductionScale(correctionIntensity: settings.correctionIntensity)
     }
 
     private struct ShimmerProbePlan {
@@ -1610,11 +1612,11 @@ private struct ShimmerPeakLimiter: Sendable {
         let hiss: Double
         let shimmer: Double
 
-        func comparableLevel(for id: String) -> Double {
+        func comparableLevel(for id: String) -> Double? {
             switch id {
             case "hiss": hiss
             case "shimmer": shimmer
-            default: -120
+            default: nil
             }
         }
     }
@@ -1903,10 +1905,4 @@ private struct PeakSafetyLimiter {
 
 private func clamped(_ value: Float, min minValue: Float, max maxValue: Float) -> Float {
     Swift.min(maxValue, Swift.max(minValue, value))
-}
-
-private extension NoiseMeasurementSnapshot {
-    func comparableLevel(for id: String) -> Double {
-        value(for: id)?.comparableLevelDB ?? -120
-    }
 }

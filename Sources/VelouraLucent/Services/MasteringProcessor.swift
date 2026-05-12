@@ -106,7 +106,7 @@ struct MasteringProcessor {
 
         let noiseReturnDecision = routePlan.decision(for: .noiseReturnGuard)
         logger?.log(MasteringStep.noiseReturnGuard.rawValue)
-        let mastered = measure(label: "ノイズ戻りガード", logger: logger) {
+        let noiseGuarded = measure(label: "ノイズ戻りガード", logger: logger) {
             applyNoiseReturnGuard(
                 signal: guarded,
                 reference: signal,
@@ -115,6 +115,12 @@ struct MasteringProcessor {
                 maxPasses: noiseReturnDecision.action == .light ? 1 : 8
             )
         }
+        let mastered = preserveMasteringHighFloor(
+            signal: noiseGuarded,
+            reference: signal,
+            peakCeilingDB: settings.peakCeilingDB,
+            logger: logger
+        )
         logger?.log("ルート/マスタリング/実行工程数: \(routePlan.runLikeCount)/\(MasteringRouteStep.allCases.count)")
         logger?.log("ルート/マスタリング/スキップ工程数: \(MasteringRouteStep.allCases.count - routePlan.runLikeCount)/\(MasteringRouteStep.allCases.count)")
         return mastered
@@ -394,7 +400,7 @@ struct MasteringProcessor {
         let harshnessPressure = max(0, analysis.harshnessScore - 0.42) * 0.92
         let airBoostPressure = max(0, settings.highShelfGain - 0.36) * 0.34
         let finishPressure = max(0, finishingIntensity - 0.52) * 0.18
-        return clamped(harshnessPressure + airBoostPressure + finishPressure, min: 0, max: 0.48)
+        return clamped(harshnessPressure + airBoostPressure + finishPressure, min: 0, max: 0.30)
     }
 
     private func applyNoiseReturnGuard(
@@ -405,80 +411,356 @@ struct MasteringProcessor {
         maxPasses: Int = 8
     ) -> AudioSignal {
         let reusedMeasurements = referenceMeasurements != nil
-        let referenceMeasurements = referenceMeasurements ?? NoiseMeasurementService.analyze(signal: reference)
+        let requiredIDs = [NoiseMeasurementID.hiss, NoiseMeasurementID.sibilance, NoiseMeasurementID.shimmer]
+        let referenceMeasurements = requiredIDs.allSatisfy { referenceMeasurements?.comparableLevel(for: $0) != nil }
+            ? referenceMeasurements!
+            : NoiseMeasurementService.analyze(signal: reference)
         if reusedMeasurements {
             logger?.log("ノイズ測定: 既存結果を使用")
         }
         return adaptiveNoiseLimit(
             signal: signal,
             referenceMeasurements: referenceMeasurements,
-            rules: [
-                NoiseReturnRule(id: "hiss", lower: 5_000, upper: 20_000, allowedReturnDB: -5.5),
-                NoiseReturnRule(id: "sibilance", lower: 5_000, upper: 20_000, allowedReturnDB: 0.35),
-                NoiseReturnRule(id: "shimmer", lower: 5_000, upper: 20_000, allowedReturnDB: 0.45)
-            ],
+            rules: InternalAudioJudgementPolicy.masteringNoiseReturnLimits,
             logger: logger,
             maxPasses: maxPasses
         )
     }
 
-    private struct NoiseReturnRule {
-        let id: String
-        let lower: Double
-        let upper: Double
-        let allowedReturnDB: Double
-    }
-
     private func adaptiveNoiseLimit(
         signal: AudioSignal,
         referenceMeasurements: NoiseMeasurementSnapshot,
-        rules: [NoiseReturnRule],
+        rules: [NoiseReturnLimit],
         logger: AudioProcessingLogger?,
         maxPasses: Int = 8
     ) -> AudioSignal {
         var currentSignal = signal
         var measurementCount = 0
+        var completionLog = "ノイズ戻り: 安全上限に到達"
+        let adaptivePasses = maxPasses
+        let probePlan = noiseReturnProbePlan(for: signal)
 
         logger?.log("ノイズ戻り: 一括判定を開始")
-        for _ in 0..<maxPasses {
-            let currentMeasurements = NoiseMeasurementService.analyze(signal: currentSignal)
+        if probePlan.usesRepresentativeWindows {
+            logger?.log("ノイズ戻り/軽量測定: \(probePlan.selectedWindowCount)/\(probePlan.totalWindowCount)区間")
+        }
+        for _ in 0..<adaptivePasses {
+            let currentMeasurements = noiseReturnProbe(signal: currentSignal, plan: probePlan)
             measurementCount += 1
-            logger?.log("ノイズ戻り/測定: \(measurementCount)/\(maxPasses)")
+            logger?.log("ノイズ戻り/軽量判定: \(measurementCount)/\(adaptivePasses)")
 
             let strongestExcess = rules
-                .map { rule -> (rule: NoiseReturnRule, excessDB: Double) in
-                    let target = referenceMeasurements.comparableLevel(for: rule.id) + rule.allowedReturnDB
-                    let current = currentMeasurements.comparableLevel(for: rule.id)
+                .compactMap { rule -> (rule: NoiseReturnLimit, excessDB: Double)? in
+                    guard let reference = referenceMeasurements.comparableLevel(for: rule.id),
+                          let current = currentMeasurements.comparableLevel(for: rule.id)
+                    else { return nil }
+                    let target = reference + rule.allowedReturnDB
                     return (rule, max(0, current - target))
                 }
                 .max { $0.excessDB < $1.excessDB }
 
             guard let strongestExcess, strongestExcess.excessDB > 0.1 else {
-                logger?.log("ノイズ戻り/測定回数: \(measurementCount)")
                 if maxPasses == 1 {
+                    logger?.log("ノイズ戻り/軽量判定回数: \(measurementCount)")
                     logger?.log("ノイズ戻りガード: 早期終了 - 初回測定で問題なし")
+                    logger?.log("ノイズ戻り: 目標到達")
+                    logger?.log("ノイズ戻り: 完了")
+                    return currentSignal
                 }
-                logger?.log("ノイズ戻り: 完了")
-                return currentSignal
+                logger?.log("ノイズ戻り: 目標到達")
+                completionLog = "ノイズ戻り: 完了"
+                break
             }
-
-            let gain = powf(10, -Float(min(strongestExcess.excessDB * 1.8, 96)) / 20)
+            let gain = noiseReturnGain(for: strongestExcess.rule, excessDB: strongestExcess.excessDB)
             let sampleRate = currentSignal.sampleRate
             let channels = mapChannelsConcurrently(currentSignal.channels) {
                 scaleBand(
                     channel: $0,
                     sampleRate: sampleRate,
-                    lower: strongestExcess.rule.lower,
-                    upper: strongestExcess.rule.upper,
+                    lower: strongestExcess.rule.lowerFrequency,
+                    upper: strongestExcess.rule.upperFrequency,
                     gain: gain
                 )
             }
             currentSignal = AudioSignal(channels: channels, sampleRate: sampleRate)
         }
 
-        logger?.log("ノイズ戻り/測定回数: \(measurementCount)")
-        logger?.log("ノイズ戻り: 上限回数で終了")
+        var finalConfirmationCount = 0
+        if maxPasses > 1,
+           let finalCorrection = fullRangeNoiseReturnCorrection(
+            signal: currentSignal,
+            referenceMeasurements: referenceMeasurements,
+            rules: rules
+           ) {
+            finalConfirmationCount = 1
+            logger?.log("ノイズ戻り/最終確認: 全体測定 1/1")
+            logger?.log("ノイズ戻り: 最終確認で追加補正")
+            let sampleRate = currentSignal.sampleRate
+            let channels = mapChannelsConcurrently(currentSignal.channels) {
+                scaleBand(
+                    channel: $0,
+                    sampleRate: sampleRate,
+                    lower: finalCorrection.rule.lowerFrequency,
+                    upper: finalCorrection.rule.upperFrequency,
+                    gain: finalCorrection.gain
+                )
+            }
+            currentSignal = AudioSignal(channels: channels, sampleRate: sampleRate)
+        }
+        if finalConfirmationCount > 0 {
+            logger?.log("ノイズ戻り/最終確認回数: \(finalConfirmationCount)")
+        }
+
+        logger?.log("ノイズ戻り/軽量判定回数: \(measurementCount)")
+        logger?.log(completionLog)
         return currentSignal
+    }
+
+    private func fullRangeNoiseReturnCorrection(
+        signal: AudioSignal,
+        referenceMeasurements: NoiseMeasurementSnapshot,
+        rules: [NoiseReturnLimit]
+    ) -> (rule: NoiseReturnLimit, gain: Float)? {
+        let currentMeasurements = NoiseMeasurementService.analyze(signal: signal)
+        guard let strongestExcess = rules
+            .compactMap({ rule -> (rule: NoiseReturnLimit, excessDB: Double)? in
+                guard let reference = referenceMeasurements.comparableLevel(for: rule.id),
+                      let current = currentMeasurements.comparableLevel(for: rule.id)
+                else { return nil }
+                let target = reference + rule.allowedReturnDB
+                return (rule, max(0, current - target))
+            })
+            .max(by: { $0.excessDB < $1.excessDB }),
+            strongestExcess.excessDB > 0.1
+        else {
+            return nil
+        }
+        let gain = noiseReturnGain(for: strongestExcess.rule, excessDB: strongestExcess.excessDB)
+        return (strongestExcess.rule, gain)
+    }
+
+    private func noiseReturnGain(for rule: NoiseReturnLimit, excessDB: Double) -> Float {
+        powf(10, -Float(min(excessDB * rule.reductionMultiplier, rule.maxReductionDB)) / 20)
+    }
+
+    private struct NoiseReturnProbePlan {
+        let ranges: [Range<Int>]
+        let totalWindowCount: Int
+
+        var selectedWindowCount: Int { ranges.count }
+        var usesRepresentativeWindows: Bool {
+            totalWindowCount > ranges.count
+        }
+    }
+
+    private struct NoiseReturnProbe {
+        let hiss: Double
+        let sibilance: Double
+        let shimmer: Double
+
+        func comparableLevel(for id: String) -> Double? {
+            switch id {
+            case "hiss": hiss
+            case "sibilance": sibilance
+            case "shimmer": shimmer
+            default: nil
+            }
+        }
+    }
+
+    private func noiseReturnProbePlan(for signal: AudioSignal) -> NoiseReturnProbePlan {
+        let mono = signal.monoMixdown()
+        guard !mono.isEmpty else {
+            return NoiseReturnProbePlan(ranges: [], totalWindowCount: 0)
+        }
+        let windowSize = max(Int(signal.sampleRate), 1)
+        let totalWindowCount = max(1, Int(ceil(Double(mono.count) / Double(windowSize))))
+        guard totalWindowCount > 45 else {
+            return NoiseReturnProbePlan(ranges: [mono.indices], totalWindowCount: 1)
+        }
+
+        let probeCount = min(24, totalWindowCount)
+        let selectedCount = min(8, probeCount)
+        let windowStride = max(1, totalWindowCount / probeCount)
+        let candidates = stride(from: 0, to: totalWindowCount, by: windowStride).prefix(probeCount).map { windowIndex in
+            let start = min(windowIndex * windowSize, mono.count)
+            let end = min(start + windowSize, mono.count)
+            return (range: start..<end, score: rmsEnergy(mono[start..<end]))
+        }
+        let selected = candidates
+            .sorted { $0.score > $1.score }
+            .prefix(selectedCount)
+            .map { $0.range }
+            .sorted { $0.lowerBound < $1.lowerBound }
+        return NoiseReturnProbePlan(ranges: selected, totalWindowCount: totalWindowCount)
+    }
+
+    private func noiseReturnProbe(signal: AudioSignal, plan: NoiseReturnProbePlan) -> NoiseReturnProbe {
+        let mono = signal.monoMixdown()
+        let analysisMono = representativeSamples(from: mono, ranges: plan.ranges)
+        guard !analysisMono.isEmpty else {
+            return NoiseReturnProbe(hiss: -120, sibilance: 0, shimmer: -120)
+        }
+
+        let loudness = MasteringAnalysisService.integratedLoudness(
+            signal: AudioSignal(channels: [analysisMono], sampleRate: signal.sampleRate)
+        )
+        let gain = loudness.isFinite && loudness > -69
+            ? powf(10, (-23 - loudness) / 20)
+            : 1
+        let comparable = analysisMono.map { $0 * gain }
+        let hissBand = bandPass(comparable, lower: 8_000, upper: min(20_000, signal.sampleRate * 0.5 - 100), sampleRate: signal.sampleRate)
+        let sibilanceBand = bandPass(comparable, lower: 5_000, upper: min(14_000, signal.sampleRate * 0.5 - 100), sampleRate: signal.sampleRate)
+        let shimmerBand = bandPass(comparable, lower: 8_000, upper: min(14_000, signal.sampleRate * 0.5 - 100), sampleRate: signal.sampleRate)
+        return NoiseReturnProbe(
+            hiss: rmsDB(hissBand),
+            sibilance: transientExcessDB(sibilanceBand, sampleRate: signal.sampleRate),
+            shimmer: transientPeakDB(shimmerBand, sampleRate: signal.sampleRate)
+        )
+    }
+
+    private func representativeSamples(from mono: [Float], ranges: [Range<Int>]) -> [Float] {
+        guard !mono.isEmpty else { return [] }
+        guard !(ranges.count == 1 && ranges[0] == mono.indices) else { return mono }
+
+        var samples: [Float] = []
+        samples.reserveCapacity(ranges.reduce(0) { $0 + $1.count })
+        for range in ranges {
+            samples.append(contentsOf: mono[range])
+        }
+        return samples
+    }
+
+    private func bandPass(_ samples: [Float], lower: Double, upper: Double, sampleRate: Double) -> [Float] {
+        guard lower < upper, upper < sampleRate * 0.5 else {
+            return Array(repeating: 0, count: samples.count)
+        }
+        return SpectralDSP.lowPass(
+            SpectralDSP.highPass(samples, cutoff: lower, sampleRate: sampleRate),
+            cutoff: upper,
+            sampleRate: sampleRate
+        )
+    }
+
+    private func transientExcessDB(_ samples: [Float], sampleRate: Double) -> Double {
+        let frameSize = max(128, Int(sampleRate * 0.020))
+        let hopSize = max(64, Int(sampleRate * 0.010))
+        let frames = frameRMS(samples, frameSize: frameSize, hopSize: hopSize).sorted()
+        guard frames.count >= 4 else { return 0 }
+        return percentile(frames, 0.95) - percentile(frames, 0.50)
+    }
+
+    private func transientPeakDB(_ samples: [Float], sampleRate: Double) -> Double {
+        let frameSize = max(128, Int(sampleRate * 0.020))
+        let hopSize = max(64, Int(sampleRate * 0.010))
+        let frames = frameRMS(samples, frameSize: frameSize, hopSize: hopSize)
+        guard frames.count >= 4 else { return rmsDB(samples) }
+        return percentile(frames, 0.95)
+    }
+
+    private func frameRMS(_ samples: [Float], frameSize: Int, hopSize: Int) -> [Double] {
+        guard !samples.isEmpty else { return [] }
+        if samples.count <= frameSize {
+            return [rmsDB(samples)]
+        }
+
+        var values: [Double] = []
+        var start = 0
+        while start + frameSize <= samples.count {
+            values.append(10 * log10(max(rmsEnergy(samples[start..<(start + frameSize)]), 1e-12)))
+            start += hopSize
+        }
+        return values
+    }
+
+    private func rmsDB(_ samples: [Float]) -> Double {
+        guard !samples.isEmpty else { return -120 }
+        return 10 * log10(max(rmsEnergy(samples[...]), 1e-12))
+    }
+
+    private func rmsEnergy(_ samples: ArraySlice<Float>) -> Double {
+        guard !samples.isEmpty else { return 0 }
+        return samples.reduce(0.0) { partial, sample in
+            partial + Double(sample * sample)
+        } / Double(samples.count)
+    }
+
+    private func percentile(_ values: [Double], _ percentile: Double) -> Double {
+        guard !values.isEmpty else { return -120 }
+        let sorted = values.sorted()
+        let index = max(0, min(sorted.count - 1, Int(round(Double(sorted.count - 1) * percentile))))
+        return sorted[index]
+    }
+
+    private struct HighFloorRule {
+        let label: String
+        let lower: Double
+        let upper: Double
+        let maxDropDB: Double
+        let maxBoostDB: Double
+    }
+
+    private func preserveMasteringHighFloor(
+        signal: AudioSignal,
+        reference: AudioSignal,
+        peakCeilingDB: Float,
+        logger: AudioProcessingLogger?
+    ) -> AudioSignal {
+        let rules = [
+            HighFloorRule(label: "5-10kHz", lower: 5_000, upper: 10_000, maxDropDB: 5.0, maxBoostDB: 7.0),
+            HighFloorRule(label: "10-16kHz", lower: 10_000, upper: 16_000, maxDropDB: 6.0, maxBoostDB: 7.0),
+            HighFloorRule(label: "16kHz以上", lower: 16_000, upper: 24_000, maxDropDB: 8.0, maxBoostDB: 6.0)
+        ]
+        var current = signal
+        var didApply = false
+
+        for rule in rules {
+            let currentDB = bandRMSDB(signal: current, lower: rule.lower, upper: rule.upper)
+            let referenceDB = bandRMSDB(signal: reference, lower: rule.lower, upper: rule.upper)
+            guard currentDB.isFinite, referenceDB.isFinite else { continue }
+
+            let targetDB = referenceDB - rule.maxDropDB
+            let neededBoostDB = targetDB - currentDB
+            guard neededBoostDB > 0.25 else { continue }
+
+            let boostDB = min(neededBoostDB, rule.maxBoostDB)
+            let gain = powf(10, Float(boostDB) / 20)
+            let sampleRate = current.sampleRate
+            let channels = mapChannelsConcurrently(current.channels) {
+                scaleBand(
+                    channel: $0,
+                    sampleRate: sampleRate,
+                    lower: rule.lower,
+                    upper: min(rule.upper, sampleRate * 0.5 - 100),
+                    gain: gain
+                )
+            }
+            current = AudioSignal(channels: channels, sampleRate: sampleRate)
+            didApply = true
+            logger?.log("高域保持: \(rule.label) +\(String(format: "%.1f", boostDB)) dB")
+        }
+
+        guard didApply else { return signal }
+        return enforcePeakCeiling(signal: current, peakCeilingDB: peakCeilingDB)
+    }
+
+    private func bandRMSDB(signal: AudioSignal, lower: Double, upper: Double) -> Double {
+        let upperBound = min(upper, signal.sampleRate * 0.5 - 100)
+        guard lower < upperBound else { return -120 }
+        let mono = signal.monoMixdown()
+        let band = bandPass(mono, lower: lower, upper: upperBound, sampleRate: signal.sampleRate)
+        return rmsDB(band)
+    }
+
+    private func enforcePeakCeiling(signal: AudioSignal, peakCeilingDB: Float) -> AudioSignal {
+        let peakCeiling = powf(10, peakCeilingDB / 20)
+        var channels = applyLookaheadLimiter(signal.channels, peakCeiling: peakCeiling, sampleRate: signal.sampleRate)
+        let peak = MasteringAnalysisService.approximateTruePeak(channels)
+        if peak > peakCeiling {
+            let trim = peakCeiling / peak
+            channels = channels.map { $0.map { $0 * trim } }
+        }
+        return AudioSignal(channels: channels, sampleRate: signal.sampleRate)
     }
 
     private func scaleBand(channel: [Float], sampleRate: Double, lower: Double, upper: Double, gain: Float) -> [Float] {
@@ -648,11 +930,5 @@ private struct MasteringAirEnhancer {
 
     private func clamped(_ value: Float, min minValue: Float, max maxValue: Float) -> Float {
         Swift.max(minValue, Swift.min(value, maxValue))
-    }
-}
-
-private extension NoiseMeasurementSnapshot {
-    func comparableLevel(for id: String) -> Double {
-        value(for: id)?.comparableLevelDB ?? -120
     }
 }

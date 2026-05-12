@@ -82,19 +82,25 @@ struct CorrectionRoutePlan: Sendable, Equatable {
         analysis: AnalysisData,
         noiseMeasurements: NoiseMeasurementSnapshot?
     ) -> CorrectionRoutePlan {
-        let rumble = noiseMeasurements.level(for: "rumble")
-        let hum = noiseMeasurements.level(for: "hum")
-        let hiss = noiseMeasurements.level(for: "hiss")
-        let shimmer = noiseMeasurements.level(for: "shimmer")
-        let mud = noiseMeasurements.level(for: "mud")
-        let sibilance = noiseMeasurements.level(for: "sibilance")
+        let rumble = noiseMeasurements?.comparableLevel(for: NoiseMeasurementID.rumble)
+        let hum = noiseMeasurements?.comparableLevel(for: NoiseMeasurementID.hum)
+        let hiss = noiseMeasurements?.comparableLevel(for: NoiseMeasurementID.hiss)
+        let shimmer = noiseMeasurements?.comparableLevel(for: NoiseMeasurementID.shimmer)
+        let mud = noiseMeasurements?.comparableLevel(for: NoiseMeasurementID.mud)
+        let sibilance = noiseMeasurements?.comparableLevel(for: NoiseMeasurementID.sibilance)
 
-        let lowNoiseIsQuiet = rumble < -12 && hum < 5
-        let highNoiseIsQuiet = hiss < -58 && shimmer < -46
-        let highNoiseNeedsCare = hiss > -52 || shimmer > -42 || analysis.hasShimmer
-        let lowMidIsClean = mud < -9
-        let sibilanceIsLow = sibilance < 7 && analysis.shimmerRatio < 0.18
-        let repairRiskIsLow = analysis.shimmerRatio < 0.16 && analysis.artifactBandRatio < 0.12
+        let lowNoiseIsQuiet = rumble.map { $0 < InternalAudioJudgementPolicy.routeLowNoiseQuietRumbleDB } == true
+            && hum.map { $0 < InternalAudioJudgementPolicy.routeLowNoiseQuietHumDB } == true
+        let highNoiseIsQuiet = hiss.map { $0 < InternalAudioJudgementPolicy.routeHighNoiseQuietHissDB } == true
+            && shimmer.map { $0 < InternalAudioJudgementPolicy.routeHighNoiseQuietShimmerDB } == true
+        let highNoiseNeedsCare = (hiss.map { $0 > InternalAudioJudgementPolicy.routeHighNoiseCareHissDB } ?? true)
+            || (shimmer.map { $0 > InternalAudioJudgementPolicy.routeHighNoiseCareShimmerDB } ?? true)
+            || analysis.hasShimmer
+        let lowMidIsClean = mud.map { $0 < InternalAudioJudgementPolicy.routeLowMidCleanMudDB } == true
+        let sibilanceIsLow = sibilance.map { $0 < InternalAudioJudgementPolicy.routeSibilanceLowDB } == true
+            && analysis.shimmerRatio < InternalAudioJudgementPolicy.routeShimmerRatioLow
+        let repairRiskIsLow = analysis.shimmerRatio < InternalAudioJudgementPolicy.routeRepairShimmerRatioLow
+            && analysis.artifactBandRatio < InternalAudioJudgementPolicy.routeRepairArtifactRatioLow
 
         var decisions: [CorrectionRouteStep: ProcessingRouteDecision] = [
             .lowNoiseCleanup: lowNoiseIsQuiet
@@ -188,15 +194,21 @@ struct MasteringRoutePlan: Sendable, Equatable {
         settings: MasteringSettings,
         noiseMeasurements: NoiseMeasurementSnapshot?
     ) -> MasteringRoutePlan {
-        let hiss = noiseMeasurements.level(for: "hiss")
-        let sibilance = noiseMeasurements.level(for: "sibilance")
-        let shimmer = noiseMeasurements.level(for: "shimmer")
-        let deEssIsUnneeded = analysis.harshnessScore < 0.24 && sibilance < 7
-        let saturationIsOff = settings.saturationAmount < 0.015
-        let airIsEnough = analysis.highBandLevelDB >= analysis.midBandLevelDB - 2.5 && settings.highShelfGain < 0.18
-        let stereoIsClose = abs(settings.stereoWidth - analysis.stereoWidth) < 0.035
-        let highReturnRiskIsLow = analysis.harshnessScore < 0.30 && settings.highShelfGain < 0.34 && shimmer < -44
-        let noiseReturnLooksClean = hiss < -58 && sibilance < 7 && shimmer < -46
+        let hiss = noiseMeasurements?.comparableLevel(for: NoiseMeasurementID.hiss)
+        let sibilance = noiseMeasurements?.comparableLevel(for: NoiseMeasurementID.sibilance)
+        let shimmer = noiseMeasurements?.comparableLevel(for: NoiseMeasurementID.shimmer)
+        let deEssIsUnneeded = analysis.harshnessScore < InternalAudioJudgementPolicy.masteringDeEssHarshnessLow
+            && sibilance.map { $0 < InternalAudioJudgementPolicy.masteringSibilanceLowDB } == true
+        let saturationIsOff = settings.saturationAmount < InternalAudioJudgementPolicy.masteringSaturationOffAmount
+        let airIsEnough = analysis.highBandLevelDB >= analysis.midBandLevelDB + InternalAudioJudgementPolicy.masteringAirEnoughHighToMidGapDB
+            && settings.highShelfGain < InternalAudioJudgementPolicy.masteringAirLowShelfGain
+        let stereoIsClose = abs(settings.stereoWidth - analysis.stereoWidth) < InternalAudioJudgementPolicy.masteringStereoCloseTolerance
+        let highReturnRiskIsLow = analysis.harshnessScore < InternalAudioJudgementPolicy.masteringHighReturnHarshnessLow
+            && settings.highShelfGain < InternalAudioJudgementPolicy.masteringHighReturnShelfLow
+            && shimmer.map { $0 < InternalAudioJudgementPolicy.masteringHighReturnShimmerLowDB } == true
+        let noiseReturnLooksClean = hiss.map { $0 < InternalAudioJudgementPolicy.masteringNoiseCleanHissDB } == true
+            && sibilance.map { $0 < InternalAudioJudgementPolicy.masteringSibilanceLowDB } == true
+            && shimmer.map { $0 < InternalAudioJudgementPolicy.masteringNoiseCleanShimmerDB } == true
 
         var decisions: [MasteringRouteStep: ProcessingRouteDecision] = [
             .tone: ProcessingRouteDecision(action: .run, reason: "帯域バランスは仕上げの土台", riskLevel: .high),
@@ -226,11 +238,5 @@ struct MasteringRoutePlan: Sendable, Equatable {
             decisions[step] = ProcessingRouteDecision(action: .run, reason: "未分類を避けるため実行", riskLevel: .medium)
         }
         return MasteringRoutePlan(decisions: decisions)
-    }
-}
-
-private extension Optional where Wrapped == NoiseMeasurementSnapshot {
-    func level(for id: String) -> Double {
-        self?.value(for: id)?.comparableLevelDB ?? -120
     }
 }
