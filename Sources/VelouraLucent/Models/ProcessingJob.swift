@@ -185,8 +185,11 @@ final class ProcessingJob {
         masteringActiveStep = nil
         completedMasteringSteps = []
         skippedMasteringSteps = []
+        masteredOutputFile = nil
         masteredMetrics = nil
         masteredNoiseMeasurements = nil
+        masteredSpectrogram = nil
+        hasExistingMasteredOutput = false
         appliedMasteringSettings = nil
     }
 
@@ -347,7 +350,7 @@ final class ProcessingJob {
         isMastering = false
         masteringLastError = message
         masteringStatusMessage = "失敗"
-        hasExistingMasteredOutput = masteredOutputFile.map { FileManager.default.fileExists(atPath: $0.path(percentEncoded: false)) } ?? false
+        hasExistingMasteredOutput = false
         masteringActiveStep = nil
         appendMasteringLog(message)
     }

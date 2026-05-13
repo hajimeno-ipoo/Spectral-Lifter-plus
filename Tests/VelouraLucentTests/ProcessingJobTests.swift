@@ -154,7 +154,7 @@ struct ProcessingJobTests {
         )
 
         #expect(plan.decision(for: .deEss).action == .run)
-        #expect(plan.decision(for: .highReturnGuard).action == .run)
+        #expect(plan.decision(for: .highReturnGuard).action == .skip)
         #expect(plan.decision(for: .noiseReturnGuard).action == .run)
     }
 
@@ -207,6 +207,21 @@ struct ProcessingJobTests {
 
         #expect(job.masteringActiveStep == .tone)
         #expect(job.completedMasteringSteps.contains(.analyze))
+    }
+
+    @Test
+    func beginMasteringClearsOldMasteredOutput() {
+        let job = ProcessingJob()
+        job.outputFile = URL(fileURLWithPath: "/tmp/output.wav")
+        job.masteredOutputFile = URL(fileURLWithPath: "/tmp/old_mastered.wav")
+        job.hasExistingMasteredOutput = true
+        job.masteredMetrics = makeSnapshot()
+
+        job.beginMastering()
+
+        #expect(job.masteredOutputFile == nil)
+        #expect(job.hasExistingMasteredOutput == false)
+        #expect(job.masteredMetrics == nil)
     }
 
     @Test

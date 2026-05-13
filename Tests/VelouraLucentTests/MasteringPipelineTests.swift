@@ -35,13 +35,13 @@ struct MasteringPipelineTests {
         #expect(logs.values.contains { $0.hasPrefix("ノイズ戻り/軽量判定: ") })
         #expect(logs.values.contains("ノイズ戻り: 完了") || logs.values.contains("ノイズ戻り: 安全上限に到達"))
         let total = try #require(parsedDuration(prefix: "合計: ", from: logs.values))
-        let stagePrefixes = ["解析: ", "音色: ", "ディエッサー: ", "ダイナミクス: ", "倍音: ", "空気感: ", "広がり: ", "ラウドネス: ", "高域戻りガード: ", "ノイズ戻りガード: ", "保存: "]
+        let stagePrefixes = ["解析: ", "音色: ", "ディエッサー: ", "ダイナミクス: ", "倍音: ", "空気感: ", "広がり: ", "ラウドネス: ", "ノイズ戻りガード: ", "保存: "]
         var summedStages = 0.0
         for prefix in stagePrefixes {
             summedStages += try #require(parsedDuration(prefix: prefix, from: logs.values))
         }
         #expect(total + 0.10 >= summedStages)
-        #expect(logs.values.contains(MasteringStep.highReturnGuard.rawValue))
+        #expect(logs.values.contains("高域戻りガード: 早期終了 - 高域戻りガードを通常マスタリングでは使わない"))
         #expect(logs.values.contains(MasteringStep.noiseReturnGuard.rawValue))
 
         let written = try AVAudioFile(forReading: output)
@@ -214,6 +214,7 @@ struct MasteringPipelineTests {
         #expect(FileManager.default.fileExists(atPath: output.path()))
         #expect(masteredPresence >= referencePresence - 6.0)
         #expect(masteredAir >= referenceAir - 7.0)
+        #expect(!logs.values.contains("高域保持: ノイズ戻り抑制 mix 0.00"))
         #expect(logs.values.contains { $0.hasPrefix("高域保持: ") } || masteredPresence >= referencePresence - 5.0)
     }
 
@@ -255,8 +256,9 @@ struct MasteringPipelineTests {
         }
 
         #expect(hissRule?.lowerFrequency == 8_000)
-        #expect(hissRule?.reductionMultiplier == 2.2)
-        #expect(hissRule?.maxReductionDB == 18.0)
+        #expect(hissRule?.allowedReturnDB == 1.5)
+        #expect(hissRule?.reductionMultiplier == 0.55)
+        #expect(hissRule?.maxReductionDB == 4.0)
     }
 
     @Test

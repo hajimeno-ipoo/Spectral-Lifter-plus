@@ -73,25 +73,25 @@ enum InternalAudioJudgementPolicy {
             id: NoiseMeasurementID.hiss,
             lowerFrequency: 8_000,
             upperFrequency: 20_000,
-            allowedReturnDB: -2.0,
-            reductionMultiplier: 2.2,
-            maxReductionDB: 18.0
+            allowedReturnDB: 1.5,
+            reductionMultiplier: 0.55,
+            maxReductionDB: 4.0
         ),
         NoiseReturnLimit(
             id: NoiseMeasurementID.sibilance,
             lowerFrequency: 5_000,
             upperFrequency: 12_000,
-            allowedReturnDB: 0.6,
-            reductionMultiplier: 0.9,
-            maxReductionDB: 6.0
+            allowedReturnDB: 1.2,
+            reductionMultiplier: 0.55,
+            maxReductionDB: 3.5
         ),
         NoiseReturnLimit(
             id: NoiseMeasurementID.shimmer,
             lowerFrequency: 8_000,
             upperFrequency: 16_000,
-            allowedReturnDB: 0.7,
-            reductionMultiplier: 0.9,
-            maxReductionDB: 6.0
+            allowedReturnDB: 1.4,
+            reductionMultiplier: 0.55,
+            maxReductionDB: 3.5
         )
     ]
 

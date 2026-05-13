@@ -47,6 +47,9 @@ struct ContentView: View {
         .onChange(of: job.selectedMasteringProfile) { _, newValue in
             job.applyMasteringProfile(newValue)
         }
+        .onDisappear {
+            PreviewFileStore.removeAllPreviewFiles()
+        }
     }
 
     private var header: some View {
@@ -2324,6 +2327,7 @@ struct ContentView: View {
     private func beginInputSelection(for url: URL) -> UUID {
         let selectionID = UUID()
         inputSelectionID = selectionID
+        PreviewFileStore.removeAllPreviewFiles()
         job.prepareForSelection(url)
         preview.stopPlayback()
         preparePreviewCards()

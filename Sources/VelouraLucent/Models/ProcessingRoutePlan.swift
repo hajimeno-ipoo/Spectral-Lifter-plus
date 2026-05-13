@@ -203,9 +203,11 @@ struct MasteringRoutePlan: Sendable, Equatable {
         let airIsEnough = analysis.highBandLevelDB >= analysis.midBandLevelDB + InternalAudioJudgementPolicy.masteringAirEnoughHighToMidGapDB
             && settings.highShelfGain < InternalAudioJudgementPolicy.masteringAirLowShelfGain
         let stereoIsClose = abs(settings.stereoWidth - analysis.stereoWidth) < InternalAudioJudgementPolicy.masteringStereoCloseTolerance
-        let highReturnRiskIsLow = analysis.harshnessScore < InternalAudioJudgementPolicy.masteringHighReturnHarshnessLow
-            && settings.highShelfGain < InternalAudioJudgementPolicy.masteringHighReturnShelfLow
-            && shimmer.map { $0 < InternalAudioJudgementPolicy.masteringHighReturnShimmerLowDB } == true
+        let highReturnNeedsGuard = analysis.harshnessScore >= 0.62
+            && (
+                settings.highShelfGain >= 0.56
+                    || shimmer.map { $0 >= InternalAudioJudgementPolicy.masteringHighReturnShimmerLowDB } == true
+            )
         let noiseReturnLooksClean = hiss.map { $0 < InternalAudioJudgementPolicy.masteringNoiseCleanHissDB } == true
             && sibilance.map { $0 < InternalAudioJudgementPolicy.masteringSibilanceLowDB } == true
             && shimmer.map { $0 < InternalAudioJudgementPolicy.masteringNoiseCleanShimmerDB } == true
@@ -226,9 +228,9 @@ struct MasteringRoutePlan: Sendable, Equatable {
                 ? ProcessingRouteDecision(action: .skip, reason: "現在の広がりが目標に近い", riskLevel: .low)
                 : ProcessingRouteDecision(action: .run, reason: "ステレオ幅を目標へ近づける", riskLevel: .medium),
             .loudness: ProcessingRouteDecision(action: .run, reason: "最終音量は必須工程", riskLevel: .high),
-            .highReturnGuard: highReturnRiskIsLow
-                ? ProcessingRouteDecision(action: .skip, reason: "高域戻りリスクが低い", riskLevel: .low)
-                : ProcessingRouteDecision(action: .run, reason: "高域戻りの確認が必要", riskLevel: .medium),
+            .highReturnGuard: highReturnNeedsGuard
+                ? ProcessingRouteDecision(action: .run, reason: "刺さりと高域戻りが同時に強い", riskLevel: .medium)
+                : ProcessingRouteDecision(action: .skip, reason: "高域戻りガードを通常マスタリングでは使わない", riskLevel: .low),
             .noiseReturnGuard: noiseReturnLooksClean
                 ? ProcessingRouteDecision(action: .light, reason: "入口測定で問題なければ早期終了する", riskLevel: .medium)
                 : ProcessingRouteDecision(action: .run, reason: "ノイズ戻りを通常確認する", riskLevel: .medium)

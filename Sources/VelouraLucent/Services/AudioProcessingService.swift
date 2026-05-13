@@ -44,21 +44,7 @@ struct AudioProcessingService {
 
     static func temporaryOutputURL(for inputFile: URL) -> URL {
         let fileName = inputFile.deletingPathExtension().lastPathComponent
-        let tempDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("VelouraLucentPreview", isDirectory: true)
-        try? FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
-        let sanitizedName = shortPreviewBaseName(from: fileName)
-        let shortID = String(UUID().uuidString.prefix(6)).lowercased()
-        return tempDirectory
-            .appendingPathComponent("\(sanitizedName)_lifter_\(shortID)")
-            .appendingPathExtension(AudioFileService.outputFileExtension)
-    }
-
-    private static func shortPreviewBaseName(from fileName: String) -> String {
-        let trimmed = fileName
-            .replacingOccurrences(of: " ", with: "_")
-            .replacingOccurrences(of: "/", with: "_")
-        return String(trimmed.prefix(24))
+        return PreviewFileStore.temporaryOutputURL(baseName: fileName, suffix: "lifter")
     }
 }
 

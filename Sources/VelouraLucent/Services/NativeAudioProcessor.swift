@@ -246,6 +246,10 @@ struct NativeAudioProcessor {
         if repairDecision.action == .skip {
             benchmarkRecorder?.append("repairShimmerGuard", durationSeconds: 0)
             repairGuarded = repaired
+        } else if !repairIncreasedHighNoise(repaired, referenceMeasurements: routeNoiseMeasurements) {
+            benchmarkRecorder?.append("repairShimmerGuard", durationSeconds: 0)
+            logger?.log("修復後シマー保護: 早期終了 - 高域修復でノイズ指標が悪化していません")
+            repairGuarded = repaired
         } else {
             logger?.log("修復後シマーを確認します")
             repairGuarded = measure("repairShimmerGuard", label: "修復後シマー保護", recorder: benchmarkRecorder, logger: logger) {
@@ -333,6 +337,21 @@ struct NativeAudioProcessor {
         logger.log("ノイズ除去/12kHz以上: \(formatSignedDecibelChange(from: before.hf12Magnitude, to: after.hf12Magnitude))")
         logger.log("ノイズ除去/16kHz以上: \(formatSignedDecibelChange(from: before.hf16Magnitude, to: after.hf16Magnitude))")
         logger.log("ノイズ除去/18kHz以上: \(formatSignedDecibelChange(from: before.hf18Magnitude, to: after.hf18Magnitude))")
+    }
+
+    private func repairIncreasedHighNoise(_ signal: AudioSignal, referenceMeasurements: NoiseMeasurementSnapshot) -> Bool {
+        let repairedMeasurements = NoiseMeasurementService.analyze(signal: signal)
+        let hissDelta = noiseDelta(id: NoiseMeasurementID.hiss, reference: referenceMeasurements, current: repairedMeasurements)
+        let shimmerDelta = noiseDelta(id: NoiseMeasurementID.shimmer, reference: referenceMeasurements, current: repairedMeasurements)
+        let sibilanceDelta = noiseDelta(id: NoiseMeasurementID.sibilance, reference: referenceMeasurements, current: repairedMeasurements)
+        return hissDelta > 2.0 || shimmerDelta > 1.5 || sibilanceDelta > 1.2
+    }
+
+    private func noiseDelta(id: String, reference: NoiseMeasurementSnapshot, current: NoiseMeasurementSnapshot) -> Double {
+        guard let referenceValue = reference.comparableLevel(for: id),
+              let currentValue = current.comparableLevel(for: id)
+        else { return 0 }
+        return currentValue - referenceValue
     }
 
     private func logCorrectionRoutePlan(_ routePlan: CorrectionRoutePlan, logger: AudioProcessingLogger?) {
@@ -1463,10 +1482,15 @@ private struct ShimmerPeakLimiter: Sendable {
         let referenceMeasurements = requiredIDs.allSatisfy { referenceMeasurements?.comparableLevel(for: $0) != nil }
             ? referenceMeasurements!
             : NoiseMeasurementService.analyze(signal: reference)
-        let channels = mapChannelsConcurrently(signal.channels) {
-            processChannel($0, sampleRate: signal.sampleRate, lower: 5_000, upper: 14_000, gain: baseGain)
+        let baseLimited: AudioSignal
+        if attenuationDB >= 8 {
+            let channels = mapChannelsConcurrently(signal.channels) {
+                processChannel($0, sampleRate: signal.sampleRate, lower: 8_000, upper: 14_000, gain: baseGain)
+            }
+            baseLimited = AudioSignal(channels: channels, sampleRate: signal.sampleRate)
+        } else {
+            baseLimited = signal
         }
-        let baseLimited = AudioSignal(channels: channels, sampleRate: signal.sampleRate)
         return adaptiveLimit(
             signal: baseLimited,
             referenceMeasurements: referenceMeasurements,

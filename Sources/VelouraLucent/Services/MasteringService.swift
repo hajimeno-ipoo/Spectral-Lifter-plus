@@ -79,21 +79,7 @@ struct MasteringService {
     static func temporaryOutputURL(for inputFile: URL) -> URL {
         let fileName = inputFile.deletingPathExtension().lastPathComponent
         let baseName = fileName.hasSuffix("_mastered") ? fileName : "\(fileName)_mastered"
-        let tempDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("VelouraLucentPreview", isDirectory: true)
-        try? FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
-        let sanitizedName = shortPreviewBaseName(from: baseName)
-        let shortID = String(UUID().uuidString.prefix(6)).lowercased()
-        return tempDirectory
-            .appendingPathComponent("\(sanitizedName)_\(shortID)")
-            .appendingPathExtension(AudioFileService.outputFileExtension)
-    }
-
-    private static func shortPreviewBaseName(from fileName: String) -> String {
-        let trimmed = fileName
-            .replacingOccurrences(of: " ", with: "_")
-            .replacingOccurrences(of: "/", with: "_")
-        return String(trimmed.prefix(28))
+        return PreviewFileStore.temporaryOutputURL(baseName: baseName, suffix: "mas")
     }
 }
 
