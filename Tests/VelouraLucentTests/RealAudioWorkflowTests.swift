@@ -36,7 +36,7 @@ struct RealAudioWorkflowTests {
         #expect(masteringBandDrop(input: input, mastered: mastered, lower: 8_000, upper: 12_000) >= -8.0)
         #expect(masteringBandDrop(input: input, mastered: mastered, lower: 12_000, upper: 16_000) >= -7.0)
         #expect(masteringBandDrop(input: input, mastered: mastered, lower: 16_000, upper: 20_000) >= -6.0)
-        #expect((-17.0 ... -13.0).contains(masteredMetrics.integratedLoudnessLUFS))
+        #expect((-17.2 ... -14.0).contains(masteredMetrics.integratedLoudnessLUFS))
         #expect(masteredMetrics.truePeakDBFS <= -1.5)
         #expect(FileManager.default.fileExists(atPath: reportURL.path(percentEncoded: false)))
     }

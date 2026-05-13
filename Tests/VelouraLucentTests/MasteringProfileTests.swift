@@ -14,8 +14,11 @@ struct MasteringProfileTests {
 
         #expect(natural.targetLoudness < streaming.targetLoudness)
         #expect(streaming.targetLoudness < forward.targetLoudness)
-        #expect(streaming.targetLoudness == -14.5)
-        #expect(forward.targetLoudness <= -13.8)
+        #expect(streaming.targetLoudness == -16.7)
+        #expect(forward.targetLoudness <= -14.8)
+        #expect(streaming.lowShelfGain == 0.72)
+        #expect(streaming.lowMidGain == -0.34)
+        #expect(streaming.highShelfGain == 0.48)
         #expect(natural.saturationAmount < forward.saturationAmount)
         #expect(forward.saturationAmount <= 0.12)
         #expect(natural.dynamicsRetention > streaming.dynamicsRetention)

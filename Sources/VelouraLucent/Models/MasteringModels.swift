@@ -33,7 +33,7 @@ enum MasteringProfile: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .natural:
             return MasteringSettings(
-                targetLoudness: -16.0,
+                targetLoudness: -17.4,
                 peakCeilingDB: -1.2,
                 lowShelfGain: 0.55,
                 lowMidGain: -0.18,
@@ -53,10 +53,10 @@ enum MasteringProfile: String, CaseIterable, Identifiable, Sendable {
             )
         case .streaming:
             return MasteringSettings(
-                targetLoudness: -14.5,
+                targetLoudness: -16.7,
                 peakCeilingDB: -1.5,
-                lowShelfGain: 0.85,
-                lowMidGain: -0.28,
+                lowShelfGain: 0.72,
+                lowMidGain: -0.34,
                 presenceGain: 0.38,
                 highShelfGain: 0.48,
                 multibandCompression: MultibandCompressionSettings(
@@ -73,7 +73,7 @@ enum MasteringProfile: String, CaseIterable, Identifiable, Sendable {
             )
         case .forward:
             return MasteringSettings(
-                targetLoudness: -13.8,
+                targetLoudness: -14.8,
                 peakCeilingDB: -0.9,
                 lowShelfGain: 0.95,
                 lowMidGain: -0.16,

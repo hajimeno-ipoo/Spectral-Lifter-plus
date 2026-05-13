@@ -99,9 +99,9 @@ struct MasteringSettingsPanel: View {
             hintText: "小さいほど余裕、大きいほど前に出ます。",
             scaleLabels: ["余裕", "標準", "大きい"],
             quickActions: [
-                SliderQuickAction(title: "余裕", action: { set(\.targetLoudness, -16.0, range: -18 ... -9) }),
-                SliderQuickAction(title: "標準", action: { set(\.targetLoudness, -14.5, range: -18 ... -9) }),
-                SliderQuickAction(title: "強め", action: { set(\.targetLoudness, -13.8, range: -18 ... -9) })
+                SliderQuickAction(title: "余裕", action: { set(\.targetLoudness, -17.4, range: -18 ... -9) }),
+                SliderQuickAction(title: "標準", action: { set(\.targetLoudness, -16.7, range: -18 ... -9) }),
+                SliderQuickAction(title: "強め", action: { set(\.targetLoudness, -14.8, range: -18 ... -9) })
             ],
             stepperActions: stepper(for: \.targetLoudness, delta: 0.1, range: -18 ... -9)
         ) {

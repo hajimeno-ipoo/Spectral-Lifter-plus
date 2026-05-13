@@ -238,14 +238,18 @@ struct MasteringPipelineTests {
         let masteredAir = bandRMSDB(signal: mastered, lower: 12_000, upper: 16_000)
         let referenceUltraAir = bandRMSDB(signal: reference, lower: 16_000, upper: 20_000)
         let masteredUltraAir = bandRMSDB(signal: mastered, lower: 16_000, upper: 20_000)
+        let referenceRoom = bandRMSDB(signal: reference, lower: 300, upper: 3_000)
+        let masteredRoom = bandRMSDB(signal: mastered, lower: 300, upper: 3_000)
+        let referenceMetrics = try AudioComparisonService.analyze(fileURL: inputURL)
         let masteredMetrics = try AudioComparisonService.analyze(fileURL: output)
 
         #expect(FileManager.default.fileExists(atPath: output.path()))
         #expect(masteredPresence >= referencePresence - 8.0)
-        #expect(masteredBrilliance >= referenceBrilliance - 8.0)
+        #expect(masteredBrilliance >= referenceBrilliance - 6.5)
         #expect(masteredAir >= referenceAir - 7.0)
         #expect(masteredUltraAir >= referenceUltraAir - 6.0)
-        #expect((-16.5 ... -13.0).contains(masteredMetrics.integratedLoudnessLUFS))
+        #expect(masteredRoom - masteredMetrics.rmsDBFS <= referenceRoom - referenceMetrics.rmsDBFS + 1.2)
+        #expect((-18.2 ... -14.0).contains(masteredMetrics.integratedLoudnessLUFS))
         #expect(masteredMetrics.truePeakDBFS <= -1.5)
     }
 
