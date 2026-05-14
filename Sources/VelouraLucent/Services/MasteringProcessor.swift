@@ -19,23 +19,27 @@ struct MasteringProcessor {
         )
         logMasteringRoutePlan(routePlan, logger: logger)
 
+        logger?.start(.tone)
         logger?.log(MasteringStep.tone.rawValue)
-        var current = measure(label: "音色", logger: logger) {
+        var current = measure(label: "音色", logger: logger, progressStep: .tone) {
             applyTone(signal: signal, analysis: analysis, settings: settings, finishingIntensity: finishingIntensity)
         }
 
         let deEssDecision = routePlan.decision(for: .deEss)
         if deEssDecision.action == .skip {
+            logger?.skip(.deEss, reason: deEssDecision.reason)
             logger?.log("ディエッサー: 早期終了 - \(deEssDecision.reason)")
         } else {
+            logger?.start(.deEss)
             logger?.log(MasteringStep.deEss.rawValue)
-            current = measure(label: "ディエッサー", logger: logger) {
+            current = measure(label: "ディエッサー", logger: logger, progressStep: .deEss) {
                 applyDeEsser(signal: current, analysis: analysis, settings: settings)
             }
         }
 
+        logger?.start(.dynamics)
         logger?.log(MasteringStep.dynamics.rawValue)
-        current = measure(label: "ダイナミクス", logger: logger) {
+        current = measure(label: "ダイナミクス", logger: logger, progressStep: .dynamics) {
             applyMultibandCompression(
                 signal: current,
                 analysis: analysis,
@@ -47,20 +51,24 @@ struct MasteringProcessor {
 
         let saturateDecision = routePlan.decision(for: .saturate)
         if saturateDecision.action == .skip {
+            logger?.skip(.saturate, reason: saturateDecision.reason)
             logger?.log("倍音: 早期終了 - \(saturateDecision.reason)")
         } else {
+            logger?.start(.saturate)
             logger?.log(MasteringStep.saturate.rawValue)
-            current = measure(label: "倍音", logger: logger) {
+            current = measure(label: "倍音", logger: logger, progressStep: .saturate) {
                 applySaturation(signal: current, amount: effectiveSaturation(settings.saturationAmount, dynamicsRetention: dynamicsRetention, finishingIntensity: finishingIntensity))
             }
         }
 
         let airDecision = routePlan.decision(for: .air)
         if airDecision.action == .skip {
+            logger?.skip(.air, reason: airDecision.reason)
             logger?.log("空気感: 早期終了 - \(airDecision.reason)")
         } else {
+            logger?.start(.air)
             logger?.log(MasteringStep.air.rawValue)
-            current = measure(label: "空気感", logger: logger) {
+            current = measure(label: "空気感", logger: logger, progressStep: .air) {
                 MasteringAirEnhancer().process(
                     signal: current,
                     analysis: analysis,
@@ -72,16 +80,19 @@ struct MasteringProcessor {
 
         let stereoDecision = routePlan.decision(for: .stereo)
         if stereoDecision.action == .skip {
+            logger?.skip(.stereo, reason: stereoDecision.reason)
             logger?.log("広がり: 早期終了 - \(stereoDecision.reason)")
         } else {
+            logger?.start(.stereo)
             logger?.log(MasteringStep.stereo.rawValue)
-            current = measure(label: "広がり", logger: logger) {
+            current = measure(label: "広がり", logger: logger, progressStep: .stereo) {
                 applyStereoWidth(signal: current, targetWidth: settings.stereoWidth)
             }
         }
 
+        logger?.start(.loudness)
         logger?.log(MasteringStep.loudness.rawValue)
-        let loud = measure(label: "ラウドネス", logger: logger) {
+        let loud = measure(label: "ラウドネス", logger: logger, progressStep: .loudness) {
             applyLoudness(
                 signal: current,
                 targetLKFS: effectiveTargetLoudness(settings.targetLoudness, dynamicsRetention: dynamicsRetention, finishingIntensity: finishingIntensity),
@@ -92,11 +103,13 @@ struct MasteringProcessor {
         let highReturnDecision = routePlan.decision(for: .highReturnGuard)
         let guarded: AudioSignal
         if highReturnDecision.action == .skip {
+            logger?.skip(.highReturnGuard, reason: highReturnDecision.reason)
             logger?.log("高域戻りガード: 早期終了 - \(highReturnDecision.reason)")
             guarded = loud
         } else {
+            logger?.start(.highReturnGuard)
             logger?.log(MasteringStep.highReturnGuard.rawValue)
-            guarded = measure(label: "高域戻りガード", logger: logger) {
+            guarded = measure(label: "高域戻りガード", logger: logger, progressStep: .highReturnGuard) {
                 applyHighReturnGuard(
                     signal: loud,
                     analysis: analysis,
@@ -107,8 +120,9 @@ struct MasteringProcessor {
         }
 
         let noiseReturnDecision = routePlan.decision(for: .noiseReturnGuard)
+        logger?.start(.noiseReturnGuard)
         logger?.log(MasteringStep.noiseReturnGuard.rawValue)
-        let noiseGuarded = measure(label: "ノイズ戻りガード", logger: logger) {
+        let noiseGuarded = measure(label: "ノイズ戻りガード", logger: logger, progressStep: .noiseReturnGuard) {
             applyNoiseReturnGuard(
                 signal: guarded,
                 reference: signal,
@@ -148,11 +162,19 @@ struct MasteringProcessor {
         return finalHighPreserved
     }
 
-    private func measure<T>(label: String, logger: AudioProcessingLogger?, work: () -> T) -> T {
+    private func measure<T>(
+        label: String,
+        logger: AudioProcessingLogger?,
+        progressStep: MasteringStep? = nil,
+        work: () -> T
+    ) -> T {
         let start = DispatchTime.now().uptimeNanoseconds
         let result = work()
         let end = DispatchTime.now().uptimeNanoseconds
         logger?.log("\(label): \(formatProcessingDuration(Double(end - start) / 1_000_000_000))")
+        if let progressStep {
+            logger?.complete(progressStep)
+        }
         return result
     }
 
@@ -546,11 +568,13 @@ struct MasteringProcessor {
 
         logger?.log("ノイズ戻り: 一括判定を開始")
         if probePlan.usesRepresentativeWindows {
+            logger?.detail("\(probePlan.selectedWindowCount)/\(probePlan.totalWindowCount) 区間を確認中", for: .noiseReturnGuard)
             logger?.log("ノイズ戻り/軽量測定: \(probePlan.selectedWindowCount)/\(probePlan.totalWindowCount)区間")
         }
         for _ in 0..<adaptivePasses {
             let currentMeasurements = noiseReturnProbe(signal: currentSignal, plan: probePlan)
             measurementCount += 1
+            logger?.detail("\(measurementCount)/\(adaptivePasses) 回目を確認中", for: .noiseReturnGuard)
             logger?.log("ノイズ戻り/軽量判定: \(measurementCount)/\(adaptivePasses)")
 
             let strongestExcess = rules
@@ -595,8 +619,9 @@ struct MasteringProcessor {
             signal: currentSignal,
             referenceMeasurements: referenceMeasurements,
             rules: rules
-           ) {
+            ) {
             finalConfirmationCount = 1
+            logger?.detail("最終確認 1/1", for: .noiseReturnGuard)
             logger?.log("ノイズ戻り/最終確認: 全体測定 1/1")
             logger?.log("ノイズ戻り: 最終確認で追加補正")
             let sampleRate = currentSignal.sampleRate

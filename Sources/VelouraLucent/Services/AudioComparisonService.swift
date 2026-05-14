@@ -13,8 +13,9 @@ enum AudioComparisonService {
             return emptySnapshot()
         }
 
-        let waveformMetrics = waveformMetrics(for: mono, sampleRate: signal.sampleRate)
-        let channelMetrics = channelMetrics(for: signal)
+        let loudnessMeasurement = LoudnessMeasurementService.measure(signal: signal)
+        let waveformMetrics = waveformMetrics(for: mono, sampleRate: signal.sampleRate, loudness: loudnessMeasurement)
+        let channelMetrics = channelMetrics(for: signal, loudness: loudnessMeasurement)
         let frequencyMetrics = try frequencyMetrics(for: mono, sampleRate: signal.sampleRate)
         return snapshot(
             waveformMetrics: waveformMetrics,
@@ -29,11 +30,16 @@ enum AudioComparisonService {
             return emptySnapshot()
         }
 
+        let loudnessTask = Task.detached(priority: .utility) {
+            LoudnessMeasurementService.measure(signal: signal)
+        }
         let waveformTask = Task.detached(priority: .utility) {
-            Self.waveformMetrics(for: mono, sampleRate: signal.sampleRate)
+            let loudness = await loudnessTask.value
+            return Self.waveformMetrics(for: mono, sampleRate: signal.sampleRate, loudness: loudness)
         }
         let channelTask = Task.detached(priority: .utility) {
-            Self.channelMetrics(for: signal)
+            let loudness = await loudnessTask.value
+            return Self.channelMetrics(for: signal, loudness: loudness)
         }
         let frequencyTask = Task.detached(priority: .utility) {
             try Self.frequencyMetrics(for: mono, sampleRate: signal.sampleRate)
@@ -320,27 +326,28 @@ enum AudioComparisonService {
         let dynamics: [DynamicsMetric]
     }
 
-    private static func waveformMetrics(for mono: [Float], sampleRate: Double) -> WaveformMetrics {
+    private static func waveformMetrics(
+        for mono: [Float],
+        sampleRate: Double,
+        loudness: LoudnessMeasurementService.Measurement
+    ) -> WaveformMetrics {
         let summary = waveformSummary(for: mono, sampleRate: sampleRate)
-        let monoEnergyPrefix = energyPrefix(for: mono)
-        let weighted = kWeighted(mono, sampleRate: sampleRate)
-        let weightedEnergyPrefix = energyPrefix(for: weighted)
         let peakDBFS = 20 * log10(max(Double(summary.peak), 1e-12))
         let rmsDBFS = 20 * log10(max(Double(summary.rms), 1e-12))
 
         return WaveformMetrics(
             peakDBFS: peakDBFS,
             rmsDBFS: rmsDBFS,
-            loudnessRangeLU: loudnessRange(forEnergyPrefix: monoEnergyPrefix, sampleRate: sampleRate),
-            integratedLoudnessLUFS: integratedLoudness(forEnergyPrefix: weightedEnergyPrefix, sampleRate: sampleRate),
-            shortTermLoudness: shortTermLoudnessTimeline(forEnergyPrefix: weightedEnergyPrefix, sampleRate: sampleRate),
+            loudnessRangeLU: loudness.loudnessRangeLU,
+            integratedLoudnessLUFS: loudness.integratedLoudnessLUFS,
+            shortTermLoudness: loudness.shortTermLoudness,
             dynamics: summary.dynamics
         )
     }
 
-    private static func channelMetrics(for signal: AudioSignal) -> ChannelMetrics {
-        ChannelMetrics(
-            truePeakDBFS: 20 * log10(max(Double(MasteringAnalysisService.approximateTruePeak(signal.channels)), 1e-12)),
+    private static func channelMetrics(for signal: AudioSignal, loudness: LoudnessMeasurementService.Measurement) -> ChannelMetrics {
+        return ChannelMetrics(
+            truePeakDBFS: loudness.truePeakDBFS,
             stereoWidth: Double(MasteringAnalysisService.stereoWidth(for: signal)),
             stereoCorrelation: stereoCorrelation(for: signal)
         )
@@ -392,70 +399,6 @@ enum AudioComparisonService {
 
         let rms = sqrt(max(globalEnergy / Float(mono.count), 1e-12))
         return WaveformSummary(peak: globalPeak, rms: rms, dynamics: dynamics)
-    }
-
-    private static func energyPrefix(for values: [Float]) -> [Double] {
-        var prefix = Array(repeating: 0.0, count: values.count + 1)
-        for index in values.indices {
-            let value = Double(values[index])
-            prefix[index + 1] = prefix[index] + value * value
-        }
-        return prefix
-    }
-
-    private static func meanSquare(in prefix: [Double], start: Int, end: Int) -> Double {
-        guard start < end, start >= 0, end < prefix.count else { return 0 }
-        return (prefix[end] - prefix[start]) / Double(max(end - start, 1))
-    }
-
-    private static func integratedLoudness(forEnergyPrefix prefix: [Double], sampleRate: Double) -> Double {
-        let sampleCount = max(prefix.count - 1, 0)
-        guard sampleCount > 0 else { return -70 }
-
-        let windowSize = max(Int(sampleRate * 0.4), 1)
-        let hopSize = max(Int(sampleRate * 0.1), 1)
-        var blockLoudness: [Double] = []
-        var start = 0
-
-        while start < sampleCount {
-            let end = min(sampleCount, start + windowSize)
-            let rms = sqrt(max(meanSquare(in: prefix, start: start, end: end), 1e-9))
-            blockLoudness.append(20 * log10(max(rms, 1e-12)))
-            start += hopSize
-        }
-
-        let absoluteGated = blockLoudness.filter { $0 > -70 }
-        guard !absoluteGated.isEmpty else { return -70 }
-        let preliminary = energyAverage(absoluteGated)
-        let relativeGate = preliminary - 10
-        let relativeGated = absoluteGated.filter { $0 >= relativeGate }
-        return energyAverage(relativeGated.isEmpty ? absoluteGated : relativeGated)
-    }
-
-    private static func loudnessRange(forEnergyPrefix prefix: [Double], sampleRate: Double) -> Double {
-        let sampleCount = max(prefix.count - 1, 0)
-        guard sampleCount > 0 else { return 0 }
-
-        let windowSize = max(Int(sampleRate * 0.4), 1)
-        let hopSize = max(Int(sampleRate * 0.1), 1)
-        var blockLevels: [Double] = []
-        var start = 0
-
-        while start < sampleCount {
-            let end = min(sampleCount, start + windowSize)
-            let rms = sqrt(max(meanSquare(in: prefix, start: start, end: end), 1e-12))
-            blockLevels.append(20 * log10(max(rms, 1e-12)))
-            start += hopSize
-        }
-
-        let gated = blockLevels.filter { $0 > -70 }.sorted()
-        guard gated.count > 5 else { return 0 }
-        return percentile(gated, 0.95) - percentile(gated, 0.10)
-    }
-
-    private static func percentile(_ values: [Double], _ percentile: Double) -> Double {
-        let index = max(0, min(values.count - 1, Int(round(Double(values.count - 1) * percentile))))
-        return values[index]
     }
 
     private static func accumulateMetrics(
@@ -567,31 +510,6 @@ enum AudioComparisonService {
         return sum / total
     }
 
-    private static func shortTermLoudnessTimeline(forEnergyPrefix prefix: [Double], sampleRate: Double) -> [TimedLevelMetric] {
-        let sampleCount = max(prefix.count - 1, 0)
-        guard sampleCount > 0 else { return [] }
-
-        let duration = Double(sampleCount) / sampleRate
-        let windowDuration = min(3.0, max(0.4, duration))
-        let hopDuration = max(0.25, duration / 96.0)
-        let windowSize = max(1, Int(sampleRate * windowDuration))
-        let hopSize = max(1, Int(sampleRate * hopDuration))
-
-        var values: [TimedLevelMetric] = []
-        var start = 0
-        var index = 0
-        while start < sampleCount {
-            let end = min(sampleCount, start + windowSize)
-            guard start < end else { break }
-            let rms = sqrt(max(meanSquare(in: prefix, start: start, end: end), 1e-12))
-            let time = (Double(start + end) * 0.5) / sampleRate
-            values.append(TimedLevelMetric(id: "loudness-\(index)", time: time, levelDB: 20 * log10(max(rms, 1e-12))))
-            start += hopSize
-            index += 1
-        }
-        return values
-    }
-
     private static func stereoCorrelation(for signal: AudioSignal) -> Double {
         guard signal.channels.count >= 2 else { return 1 }
         let left = signal.channels[0]
@@ -615,14 +533,4 @@ enum AudioComparisonService {
         return max(-1, min(1, sharedEnergy / denominator))
     }
 
-    private static func kWeighted(_ signal: [Float], sampleRate: Double) -> [Float] {
-        let highPassed = SpectralDSP.highPass(signal, cutoff: 60, sampleRate: sampleRate)
-        let shelfBase = SpectralDSP.highPass(signal, cutoff: 1_500, sampleRate: sampleRate)
-        return zip(highPassed, shelfBase).map { $0 + $1 * 0.25 }
-    }
-
-    private static func energyAverage(_ loudnessValues: [Double]) -> Double {
-        let meanEnergy = loudnessValues.map { pow(10, $0 / 10) }.reduce(0, +) / Double(max(loudnessValues.count, 1))
-        return 10 * log10(max(meanEnergy, 1e-9))
-    }
 }

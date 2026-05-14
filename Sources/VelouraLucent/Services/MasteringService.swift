@@ -21,6 +21,7 @@ struct MasteringService {
         try await Task.detached(priority: .userInitiated) {
             let recorder = MasteringStageTimingRecorder()
             let totalStart = DispatchTime.now().uptimeNanoseconds
+            logger.start(MasteringStep.analyze)
             logger.log(MasteringStep.analyze.rawValue)
             logger.log("解析モード: マスタリングCPU")
             let signal = try recorder.measure(label: "読み込み", logger: logger) {
@@ -56,6 +57,7 @@ struct MasteringService {
                     NoiseMeasurementService.analyze(signal: signal)
                 }
             }
+            logger.complete(MasteringStep.analyze)
             let mastered = MasteringProcessor().process(
                 signal: signal,
                 analysis: analysis,
@@ -65,10 +67,12 @@ struct MasteringService {
                 originalReferenceNoiseMeasurements: originalReferenceNoiseMeasurements,
                 logger: logger
             )
+            logger.start(MasteringStep.save)
             logger.log(MasteringStep.save.rawValue)
             try recorder.measure(label: "保存", logger: logger) {
                 try AudioFileService.saveAudio(mastered, to: outputURL)
             }
+            logger.complete(MasteringStep.save)
             logger.log("合計: \(formatProcessingDuration(durationSeconds(since: totalStart)))")
         }.value
 

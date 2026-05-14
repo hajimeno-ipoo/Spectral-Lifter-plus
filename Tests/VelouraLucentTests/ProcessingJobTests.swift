@@ -44,14 +44,15 @@ struct ProcessingJobTests {
     }
 
     @Test
-    func progressMovesForwardWhenLogsArrive() {
+    func progressMovesForwardWhenEventsArrive() {
         let job = ProcessingJob()
         let input = URL(fileURLWithPath: "/tmp/input.wav")
 
         job.prepareForSelection(input)
         job.beginProcessing()
-        job.appendLog("入力音声を読み込みます")
-        job.appendLog("音声を解析します")
+        job.appendLog(ProcessingProgressEvent.correction(step: .loadAudio, state: .started, detail: nil).encodedMessage)
+        job.appendLog(ProcessingProgressEvent.correction(step: .loadAudio, state: .completed, detail: nil).encodedMessage)
+        job.appendLog(ProcessingProgressEvent.correction(step: .analyze, state: .started, detail: nil).encodedMessage)
 
         #expect(job.activeStep == .analyze)
         #expect(job.completedSteps.contains(.loadAudio))
@@ -59,25 +60,62 @@ struct ProcessingJobTests {
     }
 
     @Test
-    func skippedCorrectionRouteUpdatesProgress() {
+    func humanLogTextDoesNotDriveProgress() {
         let job = ProcessingJob()
 
         job.beginProcessing()
-        job.appendLog("ルート/補正: 修復後シマー保護 = スキップ - 高域補修後のシマー危険が低い")
+        job.appendLog("入力音声を読み込みます")
+        job.appendLog("音声を解析しています")
+
+        #expect(job.activeStep == nil)
+        #expect(job.completedSteps.isEmpty)
+        #expect(job.logText.contains("入力音声を読み込みます"))
+    }
+
+    @Test
+    func skippedCorrectionEventUpdatesProgress() {
+        let job = ProcessingJob()
+
+        job.beginProcessing()
+        job.appendLog(ProcessingProgressEvent.correction(step: .repairShimmerGuard, state: .skipped, detail: "高域補修後のシマー危険が低い").encodedMessage)
 
         #expect(job.skippedSteps.contains(.repairShimmerGuard))
         #expect(job.progressValue > 0)
     }
 
     @Test
-    func skippedMasteringRouteUpdatesProgress() {
+    func skippedMasteringEventUpdatesProgress() {
         let job = ProcessingJob()
         job.outputFile = URL(fileURLWithPath: "/tmp/output.wav")
 
         job.beginMastering()
-        job.appendMasteringLog("ルート/マスタリング: ディエッサー = スキップ - 刺さりとサ行ノイズが低い")
+        job.appendMasteringLog(ProcessingProgressEvent.mastering(step: .deEss, state: .skipped, detail: "刺さりとサ行ノイズが低い").encodedMessage)
 
         #expect(job.skippedMasteringSteps.contains(.deEss))
+    }
+
+    @Test
+    func progressDetailUpdatesCurrentLabel() {
+        let job = ProcessingJob()
+
+        job.beginProcessing()
+        job.appendLog(ProcessingProgressEvent.correction(step: .shimmerPeakLimit, state: .started, detail: nil).encodedMessage)
+        job.appendLog(ProcessingProgressEvent.correction(step: .shimmerPeakLimit, state: .detail, detail: "2/5 回目を確認中").encodedMessage)
+
+        #expect(job.activeStep == .shimmerPeakLimit)
+        #expect(job.progressLabel == "シマー制限: 2/5 回目を確認中")
+    }
+
+    @Test
+    func failedCorrectionStepIsKeptForProgressDisplay() {
+        let job = ProcessingJob()
+
+        job.beginProcessing()
+        job.appendLog(ProcessingProgressEvent.correction(step: .denoise, state: .started, detail: nil).encodedMessage)
+        job.finishFailure("テスト失敗")
+
+        #expect(job.failedSteps.contains(.denoise))
+        #expect(job.activeStep == nil)
     }
 
     @Test
@@ -196,17 +234,31 @@ struct ProcessingJobTests {
     }
 
     @Test
-    func masteringProgressMovesForwardWhenLogsArrive() {
+    func masteringProgressMovesForwardWhenEventsArrive() {
         let job = ProcessingJob()
         let input = URL(fileURLWithPath: "/tmp/input.wav")
 
         job.prepareForSelection(input)
         job.beginMastering()
-        job.appendMasteringLog("補正済み音源を解析します")
-        job.appendMasteringLog("帯域バランスを整えます")
+        job.appendMasteringLog(ProcessingProgressEvent.mastering(step: .analyze, state: .started, detail: nil).encodedMessage)
+        job.appendMasteringLog(ProcessingProgressEvent.mastering(step: .analyze, state: .completed, detail: nil).encodedMessage)
+        job.appendMasteringLog(ProcessingProgressEvent.mastering(step: .tone, state: .started, detail: nil).encodedMessage)
 
         #expect(job.masteringActiveStep == .tone)
         #expect(job.completedMasteringSteps.contains(.analyze))
+    }
+
+    @Test
+    func failedMasteringStepIsKeptForProgressDisplay() {
+        let job = ProcessingJob()
+        job.outputFile = URL(fileURLWithPath: "/tmp/output.wav")
+
+        job.beginMastering()
+        job.appendMasteringLog(ProcessingProgressEvent.mastering(step: .noiseReturnGuard, state: .started, detail: nil).encodedMessage)
+        job.finishMasteringFailure("テスト失敗")
+
+        #expect(job.failedMasteringSteps.contains(.noiseReturnGuard))
+        #expect(job.masteringActiveStep == nil)
     }
 
     @Test

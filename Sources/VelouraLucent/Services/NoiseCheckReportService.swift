@@ -27,6 +27,7 @@ enum NoiseCheckReportService {
                 id: definition.id,
                 label: definition.label,
                 measurementDescription: definition.measurementDescription,
+                displayDescription: definition.displayDescription,
                 unitLabel: definition.unitLabel,
                 displayScale: definition.displayScale,
                 input: inputValue,
@@ -243,6 +244,7 @@ enum NoiseCheckReportService {
                 label: "ヒス・シュワシュワ",
                 unitLabel: "dBFS",
                 measurementDescription: "静かな区間の8kHz以上の床",
+                displayDescription: "下がるほどノイズが少ない",
                 displayScale: NoiseCheckDisplayScale(minimum: -120, maximum: -80),
                 cautionDB: limit(for: NoiseMeasurementID.hiss).cautionDB,
                 warningDB: limit(for: NoiseMeasurementID.hiss).warningDB,
@@ -275,6 +277,7 @@ enum NoiseCheckReportService {
                 label: "サ行・歯擦音",
                 unitLabel: "dB",
                 measurementDescription: "5〜9kHzの短時間突出",
+                displayDescription: "増えると刺さりやすい。下げすぎると声が丸くなる",
                 displayScale: NoiseCheckDisplayScale(minimum: 0, maximum: 14),
                 cautionDB: limit(for: NoiseMeasurementID.sibilance).cautionDB,
                 warningDB: limit(for: NoiseMeasurementID.sibilance).warningDB,
@@ -308,6 +311,7 @@ enum NoiseCheckReportService {
                 label: "高域のチラつき",
                 unitLabel: "dBFS",
                 measurementDescription: "静かな区間の10〜16kHz床",
+                displayDescription: "下がるほど高域ノイズが少ない",
                 displayScale: NoiseCheckDisplayScale(minimum: -120, maximum: -80),
                 cautionDB: limit(for: NoiseMeasurementID.shimmer).cautionDB,
                 warningDB: limit(for: NoiseMeasurementID.shimmer).warningDB,
@@ -340,6 +344,7 @@ enum NoiseCheckReportService {
                 label: "こもり・低いザラつき",
                 unitLabel: "dB",
                 measurementDescription: "300Hz〜1kHzの全体比",
+                displayDescription: "上がるとこもりやすい",
                 displayScale: NoiseCheckDisplayScale(minimum: -25, maximum: -5),
                 cautionDB: limit(for: NoiseMeasurementID.mud).cautionDB,
                 warningDB: limit(for: NoiseMeasurementID.mud).warningDB,
@@ -372,6 +377,7 @@ enum NoiseCheckReportService {
                 label: "ハム・電源ノイズ",
                 unitLabel: "dB",
                 measurementDescription: "50/60Hzと倍音の周辺比",
+                displayDescription: "下がるほど電源ノイズが少ない",
                 displayScale: NoiseCheckDisplayScale(minimum: 0, maximum: 12),
                 cautionDB: limit(for: NoiseMeasurementID.hum).cautionDB,
                 warningDB: limit(for: NoiseMeasurementID.hum).warningDB,
@@ -404,6 +410,7 @@ enum NoiseCheckReportService {
                 label: "低域ゴロゴロ",
                 unitLabel: "dBFS",
                 measurementDescription: "静かな区間の20〜150Hz床",
+                displayDescription: "下がるほど低域ノイズが少ない",
                 displayScale: NoiseCheckDisplayScale(minimum: -90, maximum: -40),
                 cautionDB: limit(for: NoiseMeasurementID.rumble).cautionDB,
                 warningDB: limit(for: NoiseMeasurementID.rumble).warningDB,
@@ -436,6 +443,7 @@ enum NoiseCheckReportService {
                 label: "環境音・部屋鳴り",
                 unitLabel: "dBFS",
                 measurementDescription: "静かな区間の100Hz〜8kHz床",
+                displayDescription: "下がるほど環境音が少ない",
                 displayScale: NoiseCheckDisplayScale(minimum: -60, maximum: -25),
                 cautionDB: limit(for: NoiseMeasurementID.room).cautionDB,
                 warningDB: limit(for: NoiseMeasurementID.room).warningDB,
@@ -579,6 +587,7 @@ private struct NoiseDefinition {
     let label: String
     let unitLabel: String
     let measurementDescription: String
+    let displayDescription: String
     let displayScale: NoiseCheckDisplayScale
     let cautionDB: Double
     let warningDB: Double

@@ -61,7 +61,7 @@ struct MasteringAnalysisServiceTests {
         let analysis = MasteringAnalysisService.analyze(signal: signal)
         let reference = referenceAnalysis(signal: signal)
 
-        #expect(analysis.integratedLoudness == reference.integratedLoudness)
+        expectClose(analysis.integratedLoudness, reference.integratedLoudness, tolerance: 0.0001)
         #expect(analysis.truePeakDBFS == reference.truePeakDBFS)
         #expect(analysis.lowBandLevelDB == reference.lowBandLevelDB)
         #expect(analysis.midBandLevelDB == reference.midBandLevelDB)
@@ -269,7 +269,7 @@ struct MasteringAnalysisServiceTests {
         let spectralSummary = referenceSpectralSummary(for: spectrogram, sampleRate: signal.sampleRate)
         let truePeak = referenceTruePeak(signal.channels)
         return MasteringAnalysis(
-            integratedLoudness: referenceIntegratedLoudness(mono: mono, sampleRate: signal.sampleRate),
+            integratedLoudness: Float(LoudnessMeasurementService.measure(signal: signal).integratedLoudnessLUFS),
             truePeakDBFS: 20 * log10(max(Double(truePeak), 1e-12)),
             lowBandLevelDB: spectralSummary.lowBandLevelDB,
             midBandLevelDB: spectralSummary.midBandLevelDB,

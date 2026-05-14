@@ -227,7 +227,8 @@ struct ContentView: View {
                 steps: ProcessingStep.allCases,
                 activeStep: job.activeStep,
                 completedSteps: job.completedSteps,
-                skippedSteps: job.skippedSteps
+                skippedSteps: job.skippedSteps,
+                failedSteps: job.failedSteps
             )
 
             masteringProgressBlock
@@ -242,7 +243,8 @@ struct ContentView: View {
         steps: [ProcessingStep],
         activeStep: ProcessingStep?,
         completedSteps: Set<ProcessingStep>,
-        skippedSteps: Set<ProcessingStep>
+        skippedSteps: Set<ProcessingStep>,
+        failedSteps: Set<ProcessingStep>
     ) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
@@ -263,7 +265,8 @@ struct ContentView: View {
                         title: step.title,
                         isCompleted: completedSteps.contains(step),
                         isActive: activeStep == step,
-                        isSkipped: skippedSteps.contains(step)
+                        isSkipped: skippedSteps.contains(step),
+                        isFailed: failedSteps.contains(step)
                     )
                 }
             }
@@ -290,17 +293,18 @@ struct ContentView: View {
                         title: step.title,
                         isCompleted: job.completedMasteringSteps.contains(step),
                         isActive: job.masteringActiveStep == step,
-                        isSkipped: job.skippedMasteringSteps.contains(step)
+                        isSkipped: job.skippedMasteringSteps.contains(step),
+                        isFailed: job.failedMasteringSteps.contains(step)
                     )
                 }
             }
         }
     }
 
-    private func progressBadge(title: String, isCompleted: Bool, isActive: Bool, isSkipped: Bool) -> some View {
+    private func progressBadge(title: String, isCompleted: Bool, isActive: Bool, isSkipped: Bool, isFailed: Bool) -> some View {
         HStack(spacing: 6) {
-            Image(systemName: isSkipped ? "minus.circle.fill" : isCompleted ? "checkmark.circle.fill" : isActive ? "dot.circle.fill" : "circle")
-                .foregroundStyle(isSkipped ? Color.secondary : isCompleted ? Color.green : isActive ? Color.orange : Color.secondary)
+            Image(systemName: isFailed ? "xmark.circle.fill" : isSkipped ? "minus.circle.fill" : isCompleted ? "checkmark.circle.fill" : isActive ? "dot.circle.fill" : "circle")
+                .foregroundStyle(isFailed ? Color.red : isSkipped ? Color.secondary : isCompleted ? Color.green : isActive ? Color.orange : Color.secondary)
             Text(title)
                 .font(.caption)
         }
@@ -308,7 +312,7 @@ struct ContentView: View {
         .padding(.vertical, 6)
         .background(
             Capsule()
-                .fill(isActive ? Color.orange.opacity(0.14) : isCompleted ? Color.green.opacity(0.14) : Color.secondary.opacity(isSkipped ? 0.14 : 0.08))
+                .fill(isFailed ? Color.red.opacity(0.12) : isActive ? Color.orange.opacity(0.14) : isCompleted ? Color.green.opacity(0.14) : Color.secondary.opacity(isSkipped ? 0.14 : 0.08))
         )
     }
 
@@ -442,6 +446,9 @@ struct ContentView: View {
                     Text(row.measurementDescription)
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    Text(row.displayDescription)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 Spacer()
                 Text(row.summaryText)
@@ -483,11 +490,12 @@ struct ContentView: View {
                         .fill(Color.secondary.opacity(0.14))
                         .frame(height: 8)
                     RoundedRectangle(cornerRadius: 4)
-                        .fill(color.opacity(0.78))
+                        .fill(value == nil ? Color.secondary.opacity(0.24) : color.opacity(0.78))
                         .frame(width: max(2, width * normalized), height: 8)
                 }
             }
             .frame(height: 10)
+            .frame(maxWidth: 260)
             Text(value.map { formatNoiseValue($0) } ?? "--")
                 .font(.caption.monospacedDigit().weight(.semibold))
                 .frame(width: 82, alignment: .trailing)
@@ -1671,7 +1679,7 @@ struct ContentView: View {
 
     private var radarTermDefinitions: [TermDefinition] {
         [
-            TermDefinition(id: "loudness", label: "音量感", reading: "おんりょうかん", description: "曲全体の平均的な大きさです。アプリ内で同じ基準にそろえて測った目安です。"),
+            TermDefinition(id: "loudness", label: "音量", reading: "おんりょう", description: "曲全体の平均的な大きさです。LUFS、True Peak、LRA と同じ測定サービスでそろえて測ります。"),
             TermDefinition(id: "truePeak", label: "トゥルーピーク", reading: "とぅるーぴーく", description: "波形の本当の最大ピークです。上がりすぎると歪みやすくなります。"),
             TermDefinition(id: "clarity", label: "明瞭度", reading: "めいりょうど", description: "中低域のこもりと高域の耳障りさを合わせて見た、聞き取りやすさの目安です。"),
             TermDefinition(id: "stereoWidth", label: "ステレオ幅", reading: "すてれおはば", description: "左右への広がり具合です。大きいほど広く感じやすいです。"),
@@ -2007,6 +2015,9 @@ struct ContentView: View {
 
     private var masteringProgressLabel: String {
         if let step = job.masteringActiveStep {
+            if let detail = job.masteringActiveStepDetail {
+                return "\(step.title): \(detail)"
+            }
             return "\(step.title) を実行中"
         }
         return job.masteringStatusMessage
@@ -2324,7 +2335,7 @@ struct ContentView: View {
         case .lu:
             return String(format: "%.2f LU", value)
         case .lufs:
-            return String(format: "%.1f LUFS目安", value)
+            return String(format: "%.1f LUFS", value)
         case .hertz:
             return String(format: "%.0f Hz", value)
         case .ratio(let decimals):

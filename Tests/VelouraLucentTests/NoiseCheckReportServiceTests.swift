@@ -153,6 +153,63 @@ struct NoiseCheckReportServiceTests {
     }
 
     @Test
+    func displayScaleSoftensLargeDBFSReductionWithoutChangingMeasuredValues() throws {
+        let input = snapshot(hiss: -101.8, sibilance: 3, shimmer: -72, mud: -12, hum: 2, rumble: -48, room: -52)
+        let corrected = snapshot(hiss: -116.7, sibilance: 3, shimmer: -72, mud: -12, hum: 2, rumble: -48, room: -52)
+
+        let report = try #require(NoiseCheckReportService.makeReport(
+            input: input,
+            corrected: corrected,
+            mastered: nil,
+            correctionSettings: DenoiseStrength.balanced.settings,
+            settings: MasteringProfile.streaming.settings
+        ))
+
+        let hiss = try #require(report.rows.first { $0.id == "hiss" })
+        let inputRatio = hiss.displayScale.ratio(for: hiss.input?.levelDB)
+        let correctedRatio = hiss.displayScale.ratio(for: hiss.corrected?.levelDB)
+
+        #expect(hiss.input?.measuredLevelDB == -101.8)
+        #expect(hiss.corrected?.measuredLevelDB == -116.7)
+        #expect(correctedRatio > 0.28)
+        #expect(inputRatio - correctedRatio < 0.35)
+    }
+
+    @Test
+    func missingNoiseBarsUseConsistentPlaceholderWidth() throws {
+        let report = try #require(NoiseCheckReportService.makeReport(
+            input: snapshot(hiss: -72, sibilance: 3, shimmer: -72, mud: -12, hum: 2, rumble: -48, room: -52),
+            corrected: nil,
+            mastered: nil,
+            correctionSettings: DenoiseStrength.gentle.settings,
+            settings: MasteringProfile.natural.settings
+        ))
+
+        let missingRatios = report.rows.map { $0.displayScale.ratio(for: nil) }
+        #expect(Set(missingRatios).count == 1)
+        #expect(missingRatios.allSatisfy { $0 == 0.62 })
+    }
+
+    @Test
+    func rowsExplainNoiseDirectionForDisplay() throws {
+        let report = try #require(NoiseCheckReportService.makeReport(
+            input: snapshot(hiss: -72, sibilance: 3, shimmer: -72, mud: -12, hum: 2, rumble: -48, room: -52),
+            corrected: nil,
+            mastered: nil,
+            correctionSettings: DenoiseStrength.gentle.settings,
+            settings: MasteringProfile.natural.settings
+        ))
+
+        let hiss = try #require(report.rows.first { $0.id == "hiss" })
+        let sibilance = try #require(report.rows.first { $0.id == "sibilance" })
+        let mud = try #require(report.rows.first { $0.id == "mud" })
+
+        #expect(hiss.displayDescription == "下がるほどノイズが少ない")
+        #expect(sibilance.displayDescription.contains("下げすぎると声が丸くなる"))
+        #expect(mud.displayDescription == "上がるとこもりやすい")
+    }
+
+    @Test
     func reportRequiresAtLeastOneStage() {
         #expect(NoiseCheckReportService.makeReport(
             input: nil,

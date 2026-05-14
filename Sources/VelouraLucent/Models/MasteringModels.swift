@@ -93,6 +93,7 @@ enum MasteringProfile: String, CaseIterable, Identifiable, Sendable {
             )
         }
     }
+
 }
 
 struct MasteringSettings: Sendable, Equatable {
@@ -245,5 +246,25 @@ enum MasteringStep: String, CaseIterable, Hashable {
         case .save:
             return "書き出し"
         }
+    }
+
+    var eventID: String {
+        switch self {
+        case .analyze: "analyze"
+        case .tone: "tone"
+        case .deEss: "deEss"
+        case .dynamics: "dynamics"
+        case .saturate: "saturate"
+        case .air: "air"
+        case .stereo: "stereo"
+        case .loudness: "loudness"
+        case .highReturnGuard: "highReturnGuard"
+        case .noiseReturnGuard: "noiseReturnGuard"
+        case .save: "save"
+        }
+    }
+
+    static func step(eventID: String) -> MasteringStep? {
+        allCases.first { $0.eventID == eventID }
     }
 }

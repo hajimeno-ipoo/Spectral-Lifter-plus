@@ -314,6 +314,7 @@ struct NoiseCheckRow: Sendable, Equatable, Identifiable {
     let id: String
     let label: String
     let measurementDescription: String
+    let displayDescription: String
     let unitLabel: String
     let displayScale: NoiseCheckDisplayScale
     let input: NoiseCheckValue?
@@ -356,12 +357,20 @@ struct NoiseCheckValue: Sendable, Equatable {
 struct NoiseCheckDisplayScale: Sendable, Equatable {
     let minimum: Double
     let maximum: Double
+    let missingRatio: Double
+
+    init(minimum: Double, maximum: Double, missingRatio: Double = 0.62) {
+        self.minimum = minimum
+        self.maximum = maximum
+        self.missingRatio = missingRatio
+    }
 
     func ratio(for value: Double?) -> Double {
-        guard let value else { return 0 }
+        guard let value else { return missingRatio }
         let span = max(maximum - minimum, 1.0)
-        let normalized = (value - minimum) / span
-        return max(0.04, min(1.0, normalized))
+        let normalized = max(0, min(1.0, (value - minimum) / span))
+        let softened = sqrt(normalized)
+        return max(0.28, min(0.92, 0.28 + softened * 0.64))
     }
 }
 

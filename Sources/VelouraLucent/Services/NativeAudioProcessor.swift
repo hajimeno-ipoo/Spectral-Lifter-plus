@@ -4,6 +4,40 @@ protocol AudioProcessingLogger {
     func log(_ message: String)
 }
 
+extension AudioProcessingLogger {
+    func start(_ step: ProcessingStep, detail: String? = nil) {
+        log(ProcessingProgressEvent.correction(step: step, state: .started, detail: detail).encodedMessage)
+    }
+
+    func complete(_ step: ProcessingStep) {
+        log(ProcessingProgressEvent.correction(step: step, state: .completed, detail: nil).encodedMessage)
+    }
+
+    func skip(_ step: ProcessingStep, reason: String? = nil) {
+        log(ProcessingProgressEvent.correction(step: step, state: .skipped, detail: reason).encodedMessage)
+    }
+
+    func detail(_ detail: String, for step: ProcessingStep) {
+        log(ProcessingProgressEvent.correction(step: step, state: .detail, detail: detail).encodedMessage)
+    }
+
+    func start(_ step: MasteringStep, detail: String? = nil) {
+        log(ProcessingProgressEvent.mastering(step: step, state: .started, detail: detail).encodedMessage)
+    }
+
+    func complete(_ step: MasteringStep) {
+        log(ProcessingProgressEvent.mastering(step: step, state: .completed, detail: nil).encodedMessage)
+    }
+
+    func skip(_ step: MasteringStep, reason: String? = nil) {
+        log(ProcessingProgressEvent.mastering(step: step, state: .skipped, detail: reason).encodedMessage)
+    }
+
+    func detail(_ detail: String, for step: MasteringStep) {
+        log(ProcessingProgressEvent.mastering(step: step, state: .detail, detail: detail).encodedMessage)
+    }
+}
+
 struct AudioProcessingStageBenchmark: Equatable, Sendable {
     let name: String
     let durationSeconds: Double
@@ -148,12 +182,14 @@ struct NativeAudioProcessor {
         let benchmarkRecorder = collectsBenchmark ? AudioProcessingBenchmarkRecorder() : nil
         let totalStart = DispatchTime.now().uptimeNanoseconds
 
+        logger?.start(.loadAudio)
         logger?.log("入力音声を読み込みます")
-        let signal = try measure("loadAudio", label: "読み込み", recorder: benchmarkRecorder, logger: logger) {
+        let signal = try measure("loadAudio", label: "読み込み", recorder: benchmarkRecorder, logger: logger, progressStep: .loadAudio) {
             try AudioFileService.loadAudio(from: inputFile)
         }
 
         let resolvedAnalysisMode = analysisMode.resolvedMode
+        logger?.start(ProcessingStep.analyze)
         logger?.log("音声を解析します")
         logger?.log(analysisMode.logDescription)
         let originalAnalysis: AnalysisData
@@ -161,8 +197,9 @@ struct NativeAudioProcessor {
             originalAnalysis = initialAnalysis
             benchmarkRecorder?.append("analyze", durationSeconds: 0)
             logger?.log("解析: 既存結果を使用")
+            logger?.complete(ProcessingStep.analyze)
         } else {
-            originalAnalysis = measure("analyze", label: "解析", recorder: benchmarkRecorder, logger: logger) {
+            originalAnalysis = measure("analyze", label: "解析", recorder: benchmarkRecorder, logger: logger, progressStep: .analyze) {
                 AudioAnalyzer(mode: resolvedAnalysisMode).analyze(signal: signal)
             }
         }
@@ -185,10 +222,12 @@ struct NativeAudioProcessor {
         let lowCleaned: AudioSignal
         if lowNoiseDecision.action == .skip {
             benchmarkRecorder?.append("lowNoiseCleanup", durationSeconds: 0)
+            logger?.skip(.lowNoiseCleanup, reason: lowNoiseDecision.reason)
             lowCleaned = signal
         } else {
+            logger?.start(.lowNoiseCleanup)
             logger?.log("低域ノイズを先に整えます")
-            lowCleaned = measure("lowNoiseCleanup", label: "低域ノイズ", recorder: benchmarkRecorder, logger: logger) {
+            lowCleaned = measure("lowNoiseCleanup", label: "低域ノイズ", recorder: benchmarkRecorder, logger: logger, progressStep: .lowNoiseCleanup) {
                 let dehummed = HumRemover(settings: correctionSettings).process(signal: signal)
                 return RumbleReducer(settings: correctionSettings).process(
                     signal: dehummed,
@@ -199,13 +238,15 @@ struct NativeAudioProcessor {
             }
         }
 
+        logger?.start(.denoise)
         logger?.log("ノイズを除去します")
-        let denoised = measure("denoise", label: "ノイズ除去", recorder: benchmarkRecorder, logger: logger) {
+        let denoised = measure("denoise", label: "ノイズ除去", recorder: benchmarkRecorder, logger: logger, progressStep: .denoise) {
             SpectralGateDenoiser(settings: correctionSettings).process(signal: lowCleaned)
         }
+        logger?.start(.sibilanceShimmerGuard)
         logger?.log("サ行保護を行います")
         let sibilanceScale: Float = routePlan.decision(for: .sibilanceShimmerGuard).action == .light ? 0.55 : 1
-        let sibilanceGuarded = measure("sibilanceShimmerGuard", label: "サ行保護", recorder: benchmarkRecorder, logger: logger) {
+        let sibilanceGuarded = measure("sibilanceShimmerGuard", label: "サ行保護", recorder: benchmarkRecorder, logger: logger, progressStep: .sibilanceShimmerGuard) {
             SibilanceShimmerGuard(settings: correctionSettings).process(signal: denoised, intensityScale: sibilanceScale)
         }
 
@@ -233,8 +274,9 @@ struct NativeAudioProcessor {
             logger: logger
         )
 
+        logger?.start(.harmonicRepair)
         logger?.log("高域を補完します")
-        let repaired = measure("harmonicRepair", label: "高域修復", recorder: benchmarkRecorder, logger: logger) {
+        let repaired = measure("harmonicRepair", label: "高域修復", recorder: benchmarkRecorder, logger: logger, progressStep: .harmonicRepair) {
             CorrectionHarmonicRepair(settings: correctionSettings).process(
                 signal: sibilanceGuarded,
                 analysis: postDenoiseAnalysis,
@@ -245,14 +287,17 @@ struct NativeAudioProcessor {
         let repairGuarded: AudioSignal
         if repairDecision.action == .skip {
             benchmarkRecorder?.append("repairShimmerGuard", durationSeconds: 0)
+            logger?.skip(.repairShimmerGuard, reason: repairDecision.reason)
             repairGuarded = repaired
         } else if !repairIncreasedHighNoise(repaired, referenceMeasurements: routeNoiseMeasurements) {
             benchmarkRecorder?.append("repairShimmerGuard", durationSeconds: 0)
+            logger?.skip(.repairShimmerGuard, reason: "高域修復でノイズ指標が悪化していません")
             logger?.log("修復後シマー保護: 早期終了 - 高域修復でノイズ指標が悪化していません")
             repairGuarded = repaired
         } else {
+            logger?.start(.repairShimmerGuard)
             logger?.log("修復後シマーを確認します")
-            repairGuarded = measure("repairShimmerGuard", label: "修復後シマー保護", recorder: benchmarkRecorder, logger: logger) {
+            repairGuarded = measure("repairShimmerGuard", label: "修復後シマー保護", recorder: benchmarkRecorder, logger: logger, progressStep: .repairShimmerGuard) {
                 SibilanceShimmerGuard(settings: correctionSettings).process(signal: repaired)
             }
         }
@@ -261,10 +306,12 @@ struct NativeAudioProcessor {
         let residueGuarded: AudioSignal
         if residueDecision.action == .skip {
             benchmarkRecorder?.append("lowMidResidueGuard", durationSeconds: 0)
+            logger?.skip(.lowMidResidueGuard, reason: residueDecision.reason)
             residueGuarded = repairGuarded
         } else {
+            logger?.start(.lowMidResidueGuard)
             logger?.log("低中域の残りを軽く整えます")
-            residueGuarded = measure("lowMidResidueGuard", label: "低中域残り", recorder: benchmarkRecorder, logger: logger) {
+            residueGuarded = measure("lowMidResidueGuard", label: "低中域残り", recorder: benchmarkRecorder, logger: logger, progressStep: .lowMidResidueGuard) {
                 LowMidResidueGuard(settings: correctionSettings).process(signal: repairGuarded)
             }
         }
@@ -272,10 +319,12 @@ struct NativeAudioProcessor {
         let shimmerLimited: AudioSignal
         if shimmerDecision.action == .skip {
             benchmarkRecorder?.append("shimmerPeakLimit", durationSeconds: 0)
+            logger?.skip(.shimmerPeakLimit, reason: shimmerDecision.reason)
             shimmerLimited = residueGuarded
         } else {
+            logger?.start(.shimmerPeakLimit)
             logger?.log("シマーを抑えます")
-            shimmerLimited = measure("shimmerPeakLimit", label: "シマー制限", recorder: benchmarkRecorder, logger: logger) {
+            shimmerLimited = measure("shimmerPeakLimit", label: "シマー制限", recorder: benchmarkRecorder, logger: logger, progressStep: .shimmerPeakLimit) {
                 ShimmerPeakLimiter(settings: correctionSettings).process(
                     signal: residueGuarded,
                     reference: signal,
@@ -286,7 +335,8 @@ struct NativeAudioProcessor {
             }
         }
 
-        let highPreserved = measure("correctionHighPreserve", label: "補正後高域保持", recorder: benchmarkRecorder, logger: logger) {
+        logger?.start(.correctionHighPreserve)
+        let highPreserved = measure("correctionHighPreserve", label: "補正後高域保持", recorder: benchmarkRecorder, logger: logger, progressStep: .correctionHighPreserve) {
             preserveCorrectionHighFloor(
                 signal: shimmerLimited,
                 reference: signal,
@@ -295,13 +345,15 @@ struct NativeAudioProcessor {
             )
         }
 
+        logger?.start(.peakSafety)
         logger?.log("ピークを保護します")
-        let finalized = measure("peakSafety", label: "ピーク保護", recorder: benchmarkRecorder, logger: logger) {
+        let finalized = measure("peakSafety", label: "ピーク保護", recorder: benchmarkRecorder, logger: logger, progressStep: .peakSafety) {
             PeakSafetyLimiter().process(signal: highPreserved)
         }
 
+        logger?.start(ProcessingStep.save)
         logger?.log("処理済みファイルを書き出します")
-        try measure("saveAudio", label: "書き出し", recorder: benchmarkRecorder, logger: logger) {
+        try measure("saveAudio", label: "書き出し", recorder: benchmarkRecorder, logger: logger, progressStep: .save) {
             try AudioFileService.saveAudio(finalized, to: outputFile)
         }
         logger?.log("合計: \(formatProcessingDuration(durationSeconds(since: totalStart)))")
@@ -317,6 +369,7 @@ struct NativeAudioProcessor {
         label: String,
         recorder: AudioProcessingBenchmarkRecorder?,
         logger: AudioProcessingLogger?,
+        progressStep: ProcessingStep? = nil,
         work: () throws -> T
     ) rethrows -> T {
         let start = DispatchTime.now().uptimeNanoseconds
@@ -325,6 +378,9 @@ struct NativeAudioProcessor {
             let duration = durationSeconds(since: start)
             recorder?.append(stageName, durationSeconds: duration)
             logger?.log("\(label): \(formatProcessingDuration(duration))")
+            if let progressStep {
+                logger?.complete(progressStep)
+            }
             return result
         } catch {
             let duration = durationSeconds(since: start)
@@ -1665,11 +1721,13 @@ private struct ShimmerPeakLimiter: Sendable {
 
         logger?.log("シマー制限: 一括判定を開始")
         if analysisPlan.usesRepresentativeWindows {
+            logger?.detail("\(analysisPlan.selectedWindowCount)/\(analysisPlan.totalWindowCount) 区間を確認中", for: .shimmerPeakLimit)
             logger?.log("シマー制限/軽量測定: \(analysisPlan.selectedWindowCount)/\(analysisPlan.totalWindowCount)区間")
         }
         for _ in 0..<adaptivePasses {
             let currentMeasurements = shimmerProbe(signal: currentSignal, plan: analysisPlan)
             measurementCount += 1
+            logger?.detail("\(measurementCount)/\(adaptivePasses) 回目を確認中", for: .shimmerPeakLimit)
             logger?.log("シマー制限/測定: \(measurementCount)/\(adaptivePasses)")
 
             let strongestExcess = rules
