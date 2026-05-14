@@ -8,12 +8,6 @@ struct ContentView: View {
     @State private var preview = AudioPreviewController()
     @State private var inputSelectionID = UUID()
 
-    private let metricColumns = [
-        GridItem(.flexible(minimum: 180), spacing: 12),
-        GridItem(.flexible(minimum: 180), spacing: 12),
-        GridItem(.flexible(minimum: 180), spacing: 12)
-    ]
-
     private let comparisonCardColumns = [
         GridItem(.flexible(), spacing: 14),
         GridItem(.flexible(), spacing: 14)
@@ -408,7 +402,7 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("ノイズチェック")
                         .font(.title3.weight(.bold))
-                    Text("入力、補正後、マスタリング後を同じ音量基準で測り、各ノイズの検出値を判定します。")
+                    Text("入力、補正後、マスタリング後を実測し、ノイズ種別ごとに改善量と戻り量を判定します。")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
@@ -419,9 +413,18 @@ struct ContentView: View {
             }
 
             VStack(alignment: .leading, spacing: 10) {
-                noiseCheckHeader()
                 ForEach(report.rows) { row in
                     noiseCheckRow(row)
+                }
+            }
+
+            if !report.recommendedActions.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("次に触るなら")
+                        .font(.headline)
+                    ForEach(report.recommendedActions) { action in
+                        noiseCheckActionCard(action)
+                    }
                 }
             }
         }
@@ -430,96 +433,103 @@ struct ContentView: View {
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
     }
 
-    private func noiseCheckHeader() -> some View {
-        HStack(spacing: 12) {
-            Text("ノイズ種別")
-                .font(.callout.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 160, alignment: .leading)
-            Text("入力")
-                .font(.callout.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 120, alignment: .leading)
-            Text("補正後")
-                .font(.callout.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 120, alignment: .leading)
-            Text("マスタリング後")
-                .font(.callout.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 140, alignment: .leading)
-            Text("変化")
-                .font(.callout.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 160, alignment: .leading)
-            Text("次に触る設定")
-                .font(.callout.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-
     private func noiseCheckRow(_ row: NoiseCheckRow) -> some View {
-        HStack(alignment: .center, spacing: 12) {
-            Text(row.label)
-                .font(.headline.weight(.semibold))
-                .frame(width: 160, alignment: .leading)
-            noiseCheckValue(row.input)
-                .frame(width: 120, alignment: .leading)
-            noiseCheckValue(row.corrected)
-                .frame(width: 120, alignment: .leading)
-            noiseCheckValue(row.mastered)
-                .frame(width: 140, alignment: .leading)
-            noiseCheckDeltaSummary(row)
-                .frame(width: 160, alignment: .leading)
-            VStack(alignment: .leading, spacing: 4) {
-                if row.recommendedActions.isEmpty {
-                    Text("不要")
-                    Text("数値の戻りが小さいため、追加調整は不要です。")
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(row.label)
+                        .font(.headline.weight(.semibold))
+                    Text(row.measurementDescription)
                         .font(.caption)
-                } else {
-                    ForEach(row.recommendedActions) { action in
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(action.title)
-                            Text(action.detail)
-                                .font(.caption.monospacedDigit())
-                        }
-                    }
+                        .foregroundStyle(.secondary)
                 }
+                Spacer()
+                Text(row.summaryText)
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(noiseCheckSeverityColor(row.severity))
             }
-            .font(.callout.weight(row.recommendedActions.isEmpty ? .regular : .semibold))
-            .foregroundStyle(row.recommendedActions.isEmpty ? Color.secondary : Color.orange)
-            .frame(maxWidth: .infinity, alignment: .leading)
+
+            noiseCheckBarLine(title: "入力", value: row.input, row: row, color: .blue)
+            noiseCheckBarLine(title: "補正後", value: row.corrected, row: row, color: .green, deltaText: row.correctionEffectText, delta: row.correctionDeltaDB)
+            noiseCheckBarLine(title: "最終版", value: row.mastered, row: row, color: .orange, deltaText: row.masteringEffectText, delta: row.masteringDeltaDB)
+
+            if row.recommendedActions.isEmpty {
+                Text("追加調整は不要です。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding(12)
         .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
     }
 
-    private func noiseCheckValue(_ value: NoiseCheckValue?) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(value.map { noiseCheckSeverityText($0.severity) } ?? "--")
-                .font(.callout.weight(.bold))
-                .foregroundStyle(noiseCheckSeverityColor(value?.severity ?? .low))
-            Text(value.map { String(format: "%.1f dB", $0.levelDB) } ?? "--")
-                .font(.callout.monospacedDigit().weight(.semibold))
-                .foregroundStyle(.secondary)
-            if let value, abs(value.measuredLevelDB - value.levelDB) >= 0.5 {
-                Text(String(format: "実測 %.1f dB", value.measuredLevelDB))
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
+    private func noiseCheckBarLine(
+        title: String,
+        value: NoiseCheckValue?,
+        row: NoiseCheckRow,
+        color: Color,
+        deltaText: String? = nil,
+        delta: Double? = nil
+    ) -> some View {
+        HStack(spacing: 10) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .frame(width: 48, alignment: .leading)
+            GeometryReader { proxy in
+                let width = proxy.size.width
+                let normalized = noiseLevelRatio(value?.levelDB, row: row)
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(Color.secondary.opacity(0.14))
+                        .frame(height: 8)
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(color.opacity(0.78))
+                        .frame(width: max(2, width * normalized), height: 8)
+                }
+            }
+            .frame(height: 10)
+            Text(value.map { formatNoiseValue($0) } ?? "--")
+                .font(.caption.monospacedDigit().weight(.semibold))
+                .frame(width: 82, alignment: .trailing)
+            if let deltaText {
+                Text(deltaText)
+                    .font(.caption.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(noiseDeltaColor(delta, lowerIsBetter: true))
+                    .frame(width: 154, alignment: .leading)
             }
         }
     }
 
-    private func noiseCheckDeltaSummary(_ row: NoiseCheckRow) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(row.correctionEffectText)
-                .font(.callout.monospacedDigit().weight(.semibold))
-                .foregroundStyle(noiseDeltaColor(row.correctionDeltaDB, lowerIsBetter: true))
-            Text(row.masteringEffectText)
-                .font(.callout.monospacedDigit().weight(.semibold))
-                .foregroundStyle(noiseDeltaColor(row.masteringDeltaDB, lowerIsBetter: true))
+    private func noiseCheckActionCard(_ action: NoiseCheckAction) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(action.title)
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                Text("\(action.currentValue) → \(action.recommendedValue)（\(action.changeValue)）")
+                    .font(.caption.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(.orange)
+            }
+            Text(action.reason)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(action.expectedEffect)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(action.caution)
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
+        .padding(10)
+        .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func noiseLevelRatio(_ value: Double?, row: NoiseCheckRow) -> Double {
+        row.displayScale.ratio(for: value)
+    }
+
+    private func formatNoiseValue(_ value: NoiseCheckValue) -> String {
+        String(format: "%.1f %@", value.levelDB, value.unitLabel)
     }
 
     private func formatNoiseDelta(_ value: Double?) -> String {
@@ -658,7 +668,7 @@ struct ContentView: View {
                     mastered: mastered
                 )
                 HStack(alignment: .top, spacing: 14) {
-                    comparisonRadarCard(stages: stages)
+                    comparisonDirectionSummaryCard(input: job.inputMetrics, corrected: corrected, mastered: mastered)
                     comparisonBalanceCurveCard(stages: stages)
                 }
 
@@ -669,7 +679,7 @@ struct ContentView: View {
                     correlationMeterCard(input: job.inputMetrics, corrected: corrected, mastered: mastered)
                 }
 
-                Text("左で仕上がりの方向、右で帯域の触り方を見比べられます。")
+                Text("左で実測差分の要点、右で帯域の触り方を見比べられます。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
@@ -679,78 +689,66 @@ struct ContentView: View {
         }
     }
 
-    private func comparisonRadarCard(stages: [ComparisonStageMetrics]) -> some View {
-        let axes = comparisonRadarAxes(stages: stages)
+    private func comparisonDirectionSummaryCard(
+        input: AudioMetricSnapshot?,
+        corrected: AudioMetricSnapshot,
+        mastered: AudioMetricSnapshot
+    ) -> some View {
+        let rows = comparisonDirectionSummaryRows(input: input, corrected: corrected, mastered: mastered)
 
-        return VStack(alignment: .leading, spacing: 10) {
+        return VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text("仕上がりの方向")
                     .font(.headline)
                 Spacer()
                 termHelpButton(
-                    title: "レーダーチャートの見方",
-                    reading: "れーだーちゃーとのみかた",
-                    description: "外側ほど、その指標が強い状態です。緑が補正後、オレンジが最終版を表します。"
+                    title: "仕上がりの方向",
+                    reading: "しあがりのほうこう",
+                    description: "点数化せず、入力から最終版、補正後から最終版の実測差分を見ます。"
                 )
             }
 
-            GeometryReader { proxy in
-                let size = min(proxy.size.width, proxy.size.height)
-                let center = CGPoint(x: proxy.size.width * 0.5, y: proxy.size.height * 0.5)
-                let radius = size * 0.37
-                let ringColor = Color.secondary.opacity(0.22)
-
-                ZStack {
-                    ForEach(1...4, id: \.self) { step in
-                        radarPolygonPath(
-                            values: Array(repeating: Double(step) / 4.0, count: axes.count),
-                            center: center,
-                            radius: radius
-                        )
-                        .stroke(ringColor, lineWidth: 1.4)
-                    }
-
-                    ForEach(Array(axes.enumerated()), id: \.offset) { index, axis in
-                        Path { path in
-                            path.move(to: center)
-                            path.addLine(to: radarPoint(value: 1, index: index, total: axes.count, center: center, radius: radius))
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(rows) { row in
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(row.title)
+                                .font(.subheadline.weight(.semibold))
+                            Spacer()
+                            Text(row.finalValue)
+                                .font(.subheadline.monospacedDigit().weight(.semibold))
+                                .foregroundStyle(row.tint)
                         }
-                        .stroke(ringColor, lineWidth: 1.4)
-
-                        Text(axis.label)
-                            .font(.caption.weight(.semibold))
+                        HStack(spacing: 10) {
+                            directionDeltaChip(title: "入力差", value: row.inputDeltaText, tint: row.inputTint)
+                            directionDeltaChip(title: "仕上げ差", value: row.masteringDeltaText, tint: row.masteringTint)
+                        }
+                        Text(row.detail)
+                            .font(.caption)
                             .foregroundStyle(.secondary)
-                            .position(
-                                radarPoint(value: 1.24, index: index, total: axes.count, center: center, radius: radius)
-                            )
                     }
-
-                    ForEach(Array(stages.enumerated()), id: \.offset) { index, stage in
-                        let values = axes.map { $0.values[index] }
-                        radarPolygonPath(
-                            values: values,
-                            center: center,
-                            radius: radius
-                        )
-                        .fill(stage.color.opacity(0.18))
-
-                        radarPolygonPath(
-                            values: values,
-                            center: center,
-                            radius: radius
-                        )
-                        .stroke(stage.color, style: StrokeStyle(lineWidth: 3.2, dash: stage.id == "input" ? [7, 4] : []))
-                    }
+                    .padding(10)
+                    .background(row.tint.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
                 }
             }
-            .frame(height: 360)
-
-            chartLegend(stages: stages)
-            termHelpGrid(items: radarTermDefinitions)
         }
         .padding(14)
         .frame(maxWidth: .infinity, minHeight: 500, alignment: .topLeading)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    private func directionDeltaChip(title: String, value: String, tint: Color) -> some View {
+        HStack(spacing: 5) {
+            Text(title)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.caption.monospacedDigit().weight(.semibold))
+                .foregroundStyle(tint)
+        }
+        .font(.caption)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(tint.opacity(0.10), in: Capsule())
     }
 
     private func shortTermLoudnessCard(stages: [ComparisonStageMetrics]) -> some View {
@@ -767,11 +765,11 @@ struct ContentView: View {
                 termHelpButton(
                     title: "短期ラウドネス",
                     reading: "たんきらうどねす",
-                    description: "場面ごとの音量感です。線が近づきすぎると、抑揚が少なくなっている可能性があります。"
+                    description: "場面ごとの音量感です。アプリ内で同じ基準にそろえて測ります。線が近づきすぎると、抑揚が少なくなっている可能性があります。"
                 )
             }
 
-            timelineLineChart(points: points, yTitle: "LUFS", yDomain: minValue ... maxValue)
+            timelineLineChart(points: points, yTitle: "音量感", yDomain: minValue ... maxValue)
                 .frame(height: 260)
 
             chartLegend(stages: stages)
@@ -827,7 +825,7 @@ struct ContentView: View {
                 termHelpButton(
                     title: "平均スペクトル比較",
                     reading: "へいきんすぺくとるひかく",
-                    description: "入力、補正後、最終版の周波数ごとの量を重ね、下段で補正と仕上げの差分を見ます。"
+                    description: "入力、補正後、最終版の周波数ごとの相対量を重ね、下段で補正と仕上げの差分を見ます。絶対音量ではなく、形の変化を見る表示です。"
                 )
             }
 
@@ -997,7 +995,7 @@ struct ContentView: View {
                     AxisTick()
                     AxisValueLabel {
                         if let number = value.as(Double.self) {
-                            Text(String(format: "%.0f dB", number))
+                            Text(String(format: "%.0f 相対dB", number))
                         }
                     }
                 }
@@ -1056,32 +1054,125 @@ struct ContentView: View {
         return stages
     }
 
-    private func comparisonRadarAxes(stages: [ComparisonStageMetrics]) -> [RadarAxisDatum] {
-        let targetLoudness = Double(job.editableMasteringSettings.targetLoudness)
-        let targetPeak = Double(job.editableMasteringSettings.peakCeilingDB)
-
+    private func comparisonDirectionSummaryRows(
+        input: AudioMetricSnapshot?,
+        corrected: AudioMetricSnapshot,
+        mastered: AudioMetricSnapshot
+    ) -> [DirectionSummaryRow] {
+        let inputReference = input ?? corrected
         return [
-            RadarAxisDatum(
-                label: "ラウドネス",
-                values: stages.map { loudnessRadarScore($0.metrics.integratedLoudnessLUFS, target: targetLoudness) }
+            directionRow(
+                id: "loudness",
+                title: "ラウドネス",
+                finalValue: formattedValue(mastered.integratedLoudnessLUFS, format: .lufs),
+                inputDelta: mastered.integratedLoudnessLUFS - inputReference.integratedLoudnessLUFS,
+                masteringDelta: mastered.integratedLoudnessLUFS - corrected.integratedLoudnessLUFS,
+                deltaFormat: .lufs,
+                positiveColor: .orange,
+                negativeColor: .secondary,
+                detail: "最終版の平均的な音量感です。上がりすぎると聴き疲れしやすくなります。"
             ),
-            RadarAxisDatum(
-                label: "トゥルーピーク",
-                values: stages.map { safetyRadarScore($0.metrics.truePeakDBFS, target: targetPeak) }
+            directionRow(
+                id: "peak",
+                title: "トゥルーピーク",
+                finalValue: formattedValue(mastered.truePeakDBFS, format: .dBFS),
+                inputDelta: mastered.truePeakDBFS - inputReference.truePeakDBFS,
+                masteringDelta: mastered.truePeakDBFS - corrected.truePeakDBFS,
+                deltaFormat: .dB,
+                positiveColor: mastered.truePeakDBFS > -0.3 ? .red : .orange,
+                negativeColor: .green,
+                detail: "最終版の最大ピークです。0 dBFS に近すぎると歪みやすくなります。"
             ),
-            RadarAxisDatum(
-                label: "明瞭度",
-                values: stages.map { listenabilityRadarScore($0.metrics) }
+            directionRow(
+                id: "dynamics",
+                title: "ダイナミクス",
+                finalValue: formattedValue(mastered.crestFactorDB, format: .dB),
+                inputDelta: mastered.crestFactorDB - inputReference.crestFactorDB,
+                masteringDelta: mastered.crestFactorDB - corrected.crestFactorDB,
+                deltaFormat: .dB,
+                positiveColor: .green,
+                negativeColor: .orange,
+                detail: "音の山と平均の差です。下がりすぎると平坦に聞こえやすくなります。"
             ),
-            RadarAxisDatum(
-                label: "ステレオ幅",
-                values: stages.map { widthRadarScore($0.metrics.stereoWidth) }
+            directionBandRow(
+                id: "sparkle",
+                title: "煌びやかさ",
+                bandID: "sparkle",
+                input: inputReference,
+                corrected: corrected,
+                mastered: mastered,
+                detail: "8kHz〜12kHz の実測値です。抜け感やきらめきに関わります。"
             ),
-            RadarAxisDatum(
-                label: "高域バランス",
-                values: stages.map { brightnessRadarScore($0.metrics) }
+            directionBandRow(
+                id: "air",
+                title: "空気感",
+                bandID: "air",
+                input: inputReference,
+                corrected: corrected,
+                mastered: mastered,
+                detail: "12kHz〜16kHz の実測値です。息感や空気の伸びに関わります。"
+            ),
+            directionBandRow(
+                id: "mud",
+                title: "こもり",
+                bandID: "mud",
+                input: inputReference,
+                corrected: corrected,
+                mastered: mastered,
+                positiveIsBetter: false,
+                detail: "300Hz〜1kHz の実測値です。増えると暗さやこもりに聞こえやすい帯域です。"
             )
         ]
+    }
+
+    private func directionBandRow(
+        id: String,
+        title: String,
+        bandID: String,
+        input: AudioMetricSnapshot,
+        corrected: AudioMetricSnapshot,
+        mastered: AudioMetricSnapshot,
+        positiveIsBetter: Bool = true,
+        detail: String
+    ) -> DirectionSummaryRow {
+        let inputValue = comparisonBandValue(input, id: bandID) ?? -120
+        let correctedValue = comparisonBandValue(corrected, id: bandID) ?? inputValue
+        let masteredValue = comparisonBandValue(mastered, id: bandID) ?? correctedValue
+        return directionRow(
+            id: id,
+            title: title,
+            finalValue: formattedValue(masteredValue, format: .dB),
+            inputDelta: masteredValue - inputValue,
+            masteringDelta: masteredValue - correctedValue,
+            deltaFormat: .dB,
+            positiveColor: positiveIsBetter ? .green : .orange,
+            negativeColor: positiveIsBetter ? .orange : .green,
+            detail: detail
+        )
+    }
+
+    private func directionRow(
+        id: String,
+        title: String,
+        finalValue: String,
+        inputDelta: Double,
+        masteringDelta: Double,
+        deltaFormat: MetricFormat,
+        positiveColor: Color,
+        negativeColor: Color,
+        detail: String
+    ) -> DirectionSummaryRow {
+        DirectionSummaryRow(
+            id: id,
+            title: title,
+            finalValue: finalValue,
+            inputDeltaText: formattedDelta(inputDelta, format: deltaFormat),
+            masteringDeltaText: formattedDelta(masteringDelta, format: deltaFormat),
+            inputTint: inputDelta >= 0 ? positiveColor : negativeColor,
+            masteringTint: masteringDelta >= 0 ? positiveColor : negativeColor,
+            tint: abs(masteringDelta) >= 1.5 ? (masteringDelta >= 0 ? positiveColor : negativeColor) : .secondary,
+            detail: detail
+        )
     }
 
     private func comparisonCurvePoints(stages: [ComparisonStageMetrics]) -> [MasteringCurvePoint] {
@@ -1153,8 +1244,8 @@ struct ContentView: View {
     private func averageSpectrumChart(points: [SpectrumCurvePoint], yDomain: ClosedRange<Double>) -> some View {
         Chart {
             RectangleMark(
-                xStart: .value("注目帯域開始", 6_000),
-                xEnd: .value("注目帯域終了", 10_000),
+                xStart: .value("注目帯域開始", 8_000),
+                xEnd: .value("注目帯域終了", 12_000),
                 yStart: .value("下限", yDomain.lowerBound),
                 yEnd: .value("上限", yDomain.upperBound)
             )
@@ -1187,7 +1278,7 @@ struct ContentView: View {
                 AxisTick()
                 AxisValueLabel {
                     if let number = value.as(Double.self) {
-                        Text(String(format: "%.0f dB", number))
+                        Text(String(format: "%.0f 相対dB", number))
                     }
                 }
             }
@@ -1197,8 +1288,8 @@ struct ContentView: View {
     private func spectrumDeltaChart(points: [SpectrumDeltaPoint], yDomain: ClosedRange<Double>) -> some View {
         Chart {
             RectangleMark(
-                xStart: .value("注目帯域開始", 6_000),
-                xEnd: .value("注目帯域終了", 10_000),
+                xStart: .value("注目帯域開始", 8_000),
+                xEnd: .value("注目帯域終了", 12_000),
                 yStart: .value("下限", yDomain.lowerBound),
                 yEnd: .value("上限", yDomain.upperBound)
             )
@@ -1381,12 +1472,12 @@ struct ContentView: View {
 
         return VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("帯域別の見え方")
+                Text("周波数バランス詳細")
                     .font(.title3.weight(.bold))
                 Spacer()
                 termHelpButton(
-                    title: "帯域別の見え方",
-                    reading: "たいいきべつのみえかた",
+                    title: "周波数バランス詳細",
+                    reading: "しゅうはすうばらんすしょうさい",
                     description: "各帯域の量を、入力・補正後・最終版で並べています。右側の差分は、補正段と最終仕上げ段でどれだけ変わったかを示します。"
                 )
             }
@@ -1443,7 +1534,7 @@ struct ContentView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
-                Text(value.map { formattedValue($0, format: .dBFS) } ?? "--")
+                Text(value.map { formattedValue($0, format: .dB) } ?? "--")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
@@ -1466,7 +1557,7 @@ struct ContentView: View {
             Text(title)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
-            Text(value.map { formattedDelta($0, format: .dBFS) } ?? "--")
+            Text(value.map { formattedDelta($0, format: .dB) } ?? "--")
                 .font(.subheadline.monospacedDigit())
                 .foregroundStyle(deltaChipColor(for: value))
         }
@@ -1524,17 +1615,25 @@ struct ContentView: View {
             MetricTableRow(item: mainMetricDefinitions[3], input: input.harshnessScore, corrected: corrected?.harshnessScore, mastered: mastered?.harshnessScore, format: .score(2)),
             MetricTableRow(item: mainMetricDefinitions[4], input: input.crestFactorDB, corrected: corrected?.crestFactorDB, mastered: mastered?.crestFactorDB, format: .dB),
             MetricTableRow(item: mainMetricDefinitions[5], input: input.loudnessRangeLU, corrected: corrected?.loudnessRangeLU, mastered: mastered?.loudnessRangeLU, format: .lu),
-            MetricTableRow(item: bandTermDefinitions[0], input: inputBandValue(input, id: "low"), corrected: corrected.flatMap { inputBandValue($0, id: "low") }, mastered: mastered.flatMap { inputBandValue($0, id: "low") }, format: .dBFS),
-            MetricTableRow(item: bandTermDefinitions[1], input: inputBandValue(input, id: "lowMid"), corrected: corrected.flatMap { inputBandValue($0, id: "lowMid") }, mastered: mastered.flatMap { inputBandValue($0, id: "lowMid") }, format: .dBFS),
-            MetricTableRow(item: bandTermDefinitions[2], input: inputBandValue(input, id: "presence"), corrected: corrected.flatMap { inputBandValue($0, id: "presence") }, mastered: mastered.flatMap { inputBandValue($0, id: "presence") }, format: .dBFS),
-            MetricTableRow(item: bandTermDefinitions[3], input: inputBandValue(input, id: "air"), corrected: corrected.flatMap { inputBandValue($0, id: "air") }, mastered: mastered.flatMap { inputBandValue($0, id: "air") }, format: .dBFS)
-        ]
+        ] + comparisonBandTermDefinitions.map { definition in
+            MetricTableRow(
+                item: definition,
+                input: comparisonBandValue(input, id: definition.id),
+                corrected: corrected.flatMap { comparisonBandValue($0, id: definition.id) },
+                mastered: mastered.flatMap { comparisonBandValue($0, id: definition.id) },
+                format: .dB
+            )
+        }
     }
 
     private func metricTableLayout(for width: CGFloat) -> MetricTableLayout {
         let labelWidth = max(165, width * 0.30)
         let valueWidth = max(110, (width - labelWidth) / 3)
         return MetricTableLayout(labelWidth: labelWidth, valueWidth: valueWidth)
+    }
+
+    private func comparisonBandValue(_ metrics: AudioMetricSnapshot, id: String) -> Double? {
+        metrics.bandEnergies.first { $0.id == id }?.levelDB
     }
 
     private func inputBandValue(_ metrics: AudioMetricSnapshot, id: String) -> Double? {
@@ -1572,7 +1671,7 @@ struct ContentView: View {
 
     private var radarTermDefinitions: [TermDefinition] {
         [
-            TermDefinition(id: "loudness", label: "ラウドネス", reading: "らうどねす", description: "曲全体の平均的な音量感です。配信先で聞こえる大きさの目安になります。"),
+            TermDefinition(id: "loudness", label: "音量感", reading: "おんりょうかん", description: "曲全体の平均的な大きさです。アプリ内で同じ基準にそろえて測った目安です。"),
             TermDefinition(id: "truePeak", label: "トゥルーピーク", reading: "とぅるーぴーく", description: "波形の本当の最大ピークです。上がりすぎると歪みやすくなります。"),
             TermDefinition(id: "clarity", label: "明瞭度", reading: "めいりょうど", description: "中低域のこもりと高域の耳障りさを合わせて見た、聞き取りやすさの目安です。"),
             TermDefinition(id: "stereoWidth", label: "ステレオ幅", reading: "すてれおはば", description: "左右への広がり具合です。大きいほど広く感じやすいです。"),
@@ -1591,10 +1690,14 @@ struct ContentView: View {
 
     private var comparisonBandTermDefinitions: [TermDefinition] {
         [
-            TermDefinition(id: "low", label: "低域", reading: "ていいき", description: "0Hz〜5kHz の比較用まとめ帯域です。低音から中域の主要成分をざっくり含みます。"),
-            TermDefinition(id: "presence", label: "中高域", reading: "ちゅうこういき", description: "5kHz〜10kHz の帯域です。子音の明瞭さや抜けに関わりやすい帯域です。"),
-            TermDefinition(id: "high", label: "高域", reading: "こういき", description: "10kHz〜16kHz の帯域です。明るさやきらめきに関わります。"),
-            TermDefinition(id: "air", label: "超高域", reading: "ちょうこういき", description: "16kHz〜24kHz の帯域です。空気感や高域の余韻に関わります。")
+            TermDefinition(id: "rumble", label: "低域ノイズ", reading: "ていいきのいず", description: "20Hz〜150Hz です。不要な低音のゴロゴロ感を見ます。"),
+            TermDefinition(id: "warmth", label: "太さ", reading: "ふとさ", description: "150Hz〜300Hz です。音の厚みやふくらみに関わります。"),
+            TermDefinition(id: "mud", label: "こもり", reading: "こもり", description: "300Hz〜1kHz です。増えると暗さやこもりに聞こえやすい帯域です。"),
+            TermDefinition(id: "core", label: "声の芯", reading: "こえのしん", description: "1kHz〜4kHz です。声や主旋律の中心に関わります。"),
+            TermDefinition(id: "presence", label: "刺さり", reading: "ささり", description: "4kHz〜8kHz です。明瞭さ、サ行、耳に痛い成分を見ます。"),
+            TermDefinition(id: "sparkle", label: "煌びやかさ", reading: "きらびやかさ", description: "8kHz〜12kHz です。抜け感やきらめきに関わります。"),
+            TermDefinition(id: "air", label: "空気感", reading: "くうきかん", description: "12kHz〜16kHz です。息感や空気の伸びに関わります。"),
+            TermDefinition(id: "ultraAir", label: "超高域", reading: "ちょうこういき", description: "16kHz〜20kHz です。高域ノイズや空気の最上部を見ます。")
         ]
     }
 
@@ -1628,70 +1731,23 @@ struct ContentView: View {
         ]
     }
 
-    private func loudnessRadarScore(_ value: Double, target: Double) -> Double {
-        max(0.12, 1 - abs(value - target) / 6.0)
-    }
-
-    private func safetyRadarScore(_ truePeak: Double, target: Double) -> Double {
-        if truePeak <= target {
-            return min(1, 0.78 + (target - truePeak) * 0.12)
-        }
-        return max(0.10, 0.78 - (truePeak - target) * 0.6)
-    }
-
-    private func listenabilityRadarScore(_ metrics: AudioMetricSnapshot) -> Double {
-        let lowMid = metrics.masteringBandEnergies.first { $0.id == "lowMid" }?.levelDB ?? -24
-        let lowMidScore = max(0, min(1, 1 - (lowMid + 18) / 18))
-        let harshnessScore = max(0, min(1, 1 - metrics.harshnessScore))
-        return max(0.08, min(1, harshnessScore * 0.75 + lowMidScore * 0.25))
-    }
-
-    private func widthRadarScore(_ value: Double) -> Double {
-        max(0.10, min(1, value / 1.20))
-    }
-
-    private func brightnessRadarScore(_ metrics: AudioMetricSnapshot) -> Double {
-        let presence = metrics.masteringBandEnergies.first { $0.id == "presence" }?.levelDB ?? -24
-        let air = metrics.masteringBandEnergies.first { $0.id == "air" }?.levelDB ?? -24
-        let average = (presence + air) * 0.5
-        return max(0.08, min(1, (average + 42) / 30))
-    }
-
-    private func radarPolygonPath(values: [Double], center: CGPoint, radius: CGFloat) -> Path {
-        var path = Path()
-        guard !values.isEmpty else { return path }
-
-        for index in values.indices {
-            let point = radarPoint(value: values[index], index: index, total: values.count, center: center, radius: radius)
-            if index == 0 {
-                path.move(to: point)
-            } else {
-                path.addLine(to: point)
-            }
-        }
-        path.closeSubpath()
-        return path
-    }
-
-    private func radarPoint(value: Double, index: Int, total: Int, center: CGPoint, radius: CGFloat) -> CGPoint {
-        let angle = Angle.degrees(-90 + (360.0 / Double(total)) * Double(index)).radians
-        let scaledRadius = radius * CGFloat(max(0, min(1, value)))
-        return CGPoint(
-            x: center.x + cos(angle) * scaledRadius,
-            y: center.y + sin(angle) * scaledRadius
-        )
-    }
-
-    private struct RadarAxisDatum {
-        let label: String
-        let values: [Double]
-    }
-
     private struct ComparisonStageMetrics: Identifiable {
         let id: String
         let label: String
         let color: Color
         let metrics: AudioMetricSnapshot
+    }
+
+    private struct DirectionSummaryRow: Identifiable {
+        let id: String
+        let title: String
+        let finalValue: String
+        let inputDeltaText: String
+        let masteringDeltaText: String
+        let inputTint: Color
+        let masteringTint: Color
+        let tint: Color
+        let detail: String
     }
 
     private struct ComparisonBandRow: Identifiable {
@@ -1873,147 +1929,6 @@ struct ContentView: View {
         return 0.04 + pow(normalized, 0.55) * 0.96
     }
 
-    private func comparisonSection(
-        title: String,
-        inputMetrics: AudioMetricSnapshot?,
-        outputMetrics: AudioMetricSnapshot?,
-        emptyMessage: String
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(title)
-                .font(.headline)
-
-            if let inputMetrics {
-                VStack(spacing: 12) {
-                    LazyVGrid(columns: metricColumns, alignment: .leading, spacing: 12) {
-                        metricCard(title: "Peak", input: inputMetrics.peakDBFS, output: outputMetrics?.peakDBFS, format: .dBFS, positiveIsBetter: false)
-                        metricCard(title: "RMS", input: inputMetrics.rmsDBFS, output: outputMetrics?.rmsDBFS, format: .dBFS, positiveIsBetter: false)
-                        metricCard(title: "重心", input: inputMetrics.centroidHz, output: outputMetrics?.centroidHz, format: .hertz, positiveIsBetter: true)
-                        metricCard(title: "12kHz+", input: inputMetrics.hf12Ratio, output: outputMetrics?.hf12Ratio, format: .ratio(5), positiveIsBetter: true)
-                        metricCard(title: "16kHz+", input: inputMetrics.hf16Ratio, output: outputMetrics?.hf16Ratio, format: .ratio(6), positiveIsBetter: true)
-                        metricCard(title: "18kHz+", input: inputMetrics.hf18Ratio, output: outputMetrics?.hf18Ratio, format: .ratio(6), positiveIsBetter: true)
-                    }
-
-                    bandChart(input: inputMetrics.bandEnergies, output: outputMetrics?.bandEnergies ?? [])
-                }
-            } else {
-                Text(emptyMessage)
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    private func metricCard(title: String, input: Double, output: Double?, format: MetricFormat, positiveIsBetter: Bool) -> some View {
-        let delta = output.map { $0 - input }
-        let color: Color = {
-            guard let delta else { return .secondary }
-            if abs(delta) < 0.000001 { return .secondary }
-            let improved = positiveIsBetter ? delta > 0 : delta < 0
-            return improved ? .green : .orange
-        }()
-
-        return VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .font(.headline)
-            Text("入力  \(formattedValue(input, format: format))")
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
-            Text("出力  \(output.map { formattedValue($0, format: format) } ?? "--")")
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(output == nil ? .secondary : .primary)
-            Text(delta.map { "差分  \(formattedDelta($0, format: format))" } ?? "差分  --")
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(color)
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, minHeight: 92, alignment: .leading)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-    }
-
-    private func bandChart(input: [BandEnergyMetric], output: [BandEnergyMetric]) -> some View {
-        let outputMap = Dictionary(uniqueKeysWithValues: output.map { ($0.id, $0) })
-        let pairs = input.map { ($0, outputMap[$0.id]) }
-        let levels = pairs.flatMap { [$0.0.levelDB, $0.1?.levelDB ?? $0.0.levelDB] }
-        let maxLevel = (levels.max() ?? 0) + 3
-        let minLevel = min((levels.min() ?? -60), -40) - 3
-
-        return VStack(alignment: .leading, spacing: 10) {
-            Text("帯域別の見え方")
-                .font(.headline)
-
-            ForEach(pairs, id: \.0.id) { inputMetric, outputMetric in
-                let delta = outputMetric.map { $0.levelDB - inputMetric.levelDB }
-                HStack(alignment: .top, spacing: 14) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(inputMetric.label)
-                            .font(.caption.bold())
-                        Text(inputMetric.rangeDescription)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-
-                        bandBar(title: "入力", value: inputMetric.levelDB, minLevel: minLevel, maxLevel: maxLevel, tint: .blue)
-                        bandBar(title: "出力", value: outputMetric?.levelDB, minLevel: minLevel, maxLevel: maxLevel, tint: .green)
-                    }
-
-                    Spacer(minLength: 0)
-
-                    diffSummary(delta: delta)
-                }
-            }
-        }
-        .padding(14)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
-    }
-
-    private func diffSummary(delta: Double?) -> some View {
-        VStack(alignment: .trailing, spacing: 8) {
-            Text("差分")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            Text(delta.map { formattedDelta($0, format: .dBFS) } ?? "--")
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(deltaChipColor(for: delta))
-
-            Capsule()
-                .fill(deltaChipColor(for: delta).opacity(delta == nil ? 0.18 : 0.9))
-                .frame(width: deltaChipWidth(for: delta), height: 8)
-                .overlay {
-                    Capsule()
-                        .stroke(Color.white.opacity(0.35), lineWidth: delta == nil ? 0 : 0.6)
-                }
-        }
-        .frame(width: 94, alignment: .trailing)
-    }
-
-    private func bandBar(title: String, value: Double?, minLevel: Double, maxLevel: Double, tint: Color) -> some View {
-        let normalized = value.map { max(0, min(1, ($0 - minLevel) / max(maxLevel - minLevel, 1))) } ?? 0
-
-        return VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text(title)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Text(value.map { formattedValue($0, format: .dBFS) } ?? "--")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
-
-            GeometryReader { proxy in
-                ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(Color.secondary.opacity(0.12))
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(tint.gradient)
-                        .frame(width: proxy.size.width * normalized)
-                }
-            }
-            .frame(height: 10)
-        }
-        .frame(maxWidth: .infinity)
-    }
-
     private func deltaChipColor(for delta: Double?) -> Color {
         guard let delta else { return .secondary }
         let magnitude = abs(delta)
@@ -2159,7 +2074,9 @@ struct ContentView: View {
                     inputFile: correctedFile,
                     settings: appliedSettings,
                     initialAnalysis: job.outputMasteringAnalysis,
-                    referenceNoiseMeasurements: job.outputNoiseMeasurements
+                    referenceNoiseMeasurements: job.outputNoiseMeasurements,
+                    originalReferenceFile: job.inputFile,
+                    originalReferenceNoiseMeasurements: job.inputNoiseMeasurements
                 ) { message in
                     Task { @MainActor in
                         job.appendMasteringLog(message)
@@ -2407,7 +2324,7 @@ struct ContentView: View {
         case .lu:
             return String(format: "%.2f LU", value)
         case .lufs:
-            return String(format: "%.1f LUFS", value)
+            return String(format: "%.1f LUFS目安", value)
         case .hertz:
             return String(format: "%.0f Hz", value)
         case .ratio(let decimals):
@@ -2426,7 +2343,7 @@ struct ContentView: View {
         case .lu:
             return String(format: value >= 0 ? "+%.2f LU" : "%.2f LU", value)
         case .lufs:
-            return String(format: value >= 0 ? "+%.1f LUFS" : "%.1f LUFS", value)
+            return String(format: value >= 0 ? "+%.1f LU" : "%.1f LU", value)
         case .hertz:
             return String(format: value >= 0 ? "+%.0f Hz" : "%.0f Hz", value)
         case .ratio(let decimals):

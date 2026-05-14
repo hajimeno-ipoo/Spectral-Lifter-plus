@@ -218,6 +218,63 @@ struct AudioQualityReportServiceTests {
         #expect(report.severity == .caution)
     }
 
+    @Test
+    func measuredBandDeltasReportDarkerAndMuddierChanges() throws {
+        let input = makeSnapshot(
+            integratedLoudnessLUFS: -18.0,
+            truePeakDBFS: -1.2,
+            stereoWidth: 0.80,
+            crestFactorDB: 10.0,
+            hf12Ratio: 0.10,
+            hf16Ratio: 0.04,
+            hf18Ratio: 0.02,
+            bands: [
+                "sparkle": -34,
+                "air": -40,
+                "mud": -28
+            ]
+        )
+        let corrected = makeSnapshot(
+            integratedLoudnessLUFS: -18.5,
+            truePeakDBFS: -1.3,
+            stereoWidth: 0.80,
+            crestFactorDB: 10.0,
+            hf12Ratio: 0.10,
+            hf16Ratio: 0.04,
+            hf18Ratio: 0.02,
+            bands: [
+                "sparkle": -37,
+                "air": -43,
+                "mud": -25
+            ]
+        )
+        let mastered = makeSnapshot(
+            integratedLoudnessLUFS: -16.5,
+            truePeakDBFS: -0.8,
+            stereoWidth: 0.82,
+            crestFactorDB: 9.8,
+            hf12Ratio: 0.10,
+            hf16Ratio: 0.04,
+            hf18Ratio: 0.02,
+            bands: [
+                "sparkle": -38,
+                "air": -44,
+                "mud": -24
+            ]
+        )
+
+        let report = try #require(AudioQualityReportService.makeReport(
+            input: input,
+            corrected: corrected,
+            mastered: mastered
+        ))
+
+        #expect(report.items.contains { $0.title == "補正後の煌びやかさが下がっています" })
+        #expect(report.items.contains { $0.title == "補正後の空気感が下がっています" })
+        #expect(report.items.contains { $0.title == "補正後のこもりが増えています" })
+        #expect(report.items.contains { $0.detail.contains("8kHz〜12kHz が 3.0 dB") })
+    }
+
     private func makeSnapshot(
         integratedLoudnessLUFS: Double,
         truePeakDBFS: Double,
@@ -225,9 +282,21 @@ struct AudioQualityReportServiceTests {
         crestFactorDB: Double,
         hf12Ratio: Double,
         hf16Ratio: Double,
-        hf18Ratio: Double
+        hf18Ratio: Double,
+        bands: [String: Double] = [:]
     ) -> AudioMetricSnapshot {
-        AudioMetricSnapshot(
+        let defaultBands: [(id: String, label: String, range: String, level: Double)] = [
+            ("rumble", "低域ノイズ", "20-150Hz", -42),
+            ("warmth", "太さ", "150-300Hz", -30),
+            ("mud", "こもり", "300Hz-1kHz", -28),
+            ("core", "声の芯", "1-4kHz", -24),
+            ("presence", "刺さり", "4-8kHz", -35),
+            ("sparkle", "煌びやかさ", "8-12kHz", -38),
+            ("air", "空気感", "12-16kHz", -44),
+            ("ultraAir", "超高域", "16-20kHz", -50)
+        ]
+
+        return AudioMetricSnapshot(
             peakDBFS: truePeakDBFS - 0.2,
             rmsDBFS: truePeakDBFS - crestFactorDB,
             crestFactorDB: crestFactorDB,
@@ -241,7 +310,14 @@ struct AudioQualityReportServiceTests {
             hf12Ratio: hf12Ratio,
             hf16Ratio: hf16Ratio,
             hf18Ratio: hf18Ratio,
-            bandEnergies: [],
+            bandEnergies: defaultBands.map { band in
+                BandEnergyMetric(
+                    id: band.id,
+                    label: band.label,
+                    rangeDescription: band.range,
+                    levelDB: bands[band.id] ?? band.level
+                )
+            },
             masteringBandEnergies: [],
             shortTermLoudness: [],
             dynamics: [],

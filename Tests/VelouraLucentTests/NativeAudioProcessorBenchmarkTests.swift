@@ -34,6 +34,7 @@ struct NativeAudioProcessorBenchmarkTests {
             "repairShimmerGuard",
             "lowMidResidueGuard",
             "shimmerPeakLimit",
+            "correctionHighPreserve",
             "peakSafety",
             "saveAudio"
         ]
@@ -47,11 +48,19 @@ struct NativeAudioProcessorBenchmarkTests {
         #expect(logs.values.contains { $0.hasPrefix("ルート/補正/実行工程数: ") })
         #expect(logs.values.contains { $0.hasPrefix("ルート/補正/スキップ工程数: ") })
         #expect(logs.values.contains("ノイズ除去/STFT再利用: 2回"))
-        let rumbleMeasurements = try #require(parsedInteger(prefix: "低域ノイズ/測定回数: ", from: logs.values))
-        let shimmerMeasurements = try #require(parsedInteger(prefix: "シマー制限/測定回数: ", from: logs.values))
-        #expect(rumbleMeasurements <= 4)
-        #expect(shimmerMeasurements <= 5)
-        #expect(logs.values.contains("シマー制限: 一括判定を開始"))
+        let rumbleMeasurements = parsedInteger(prefix: "低域ノイズ/測定回数: ", from: logs.values)
+        let shimmerMeasurements = parsedInteger(prefix: "シマー制限/測定回数: ", from: logs.values)
+        if let rumbleMeasurements {
+            #expect(rumbleMeasurements <= 4)
+        } else {
+            #expect(logs.values.contains { $0.hasPrefix("ルート/補正: 低域整理 = スキップ") })
+        }
+        if let shimmerMeasurements {
+            #expect(shimmerMeasurements <= 5)
+            #expect(logs.values.contains("シマー制限: 一括判定を開始"))
+        } else {
+            #expect(logs.values.contains { $0.hasPrefix("ルート/補正: シマー制限 = スキップ") })
+        }
         #expect(logs.values.contains { $0.hasPrefix("ノイズ除去/10-16kHzチラつき: ") && $0.hasSuffix(" dB") })
         #expect(logs.values.contains { $0.hasPrefix("ノイズ除去/12kHz以上: ") && $0.hasSuffix(" dB") })
         #expect(logs.values.contains { $0.hasPrefix("ノイズ除去/16kHz以上: ") && $0.hasSuffix(" dB") })

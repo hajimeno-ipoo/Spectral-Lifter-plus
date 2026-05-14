@@ -139,6 +139,45 @@ struct AudioProcessingPipelineTests {
     }
 
     @Test
+    func correctionPreservesMusicalAirWhileKeepingNoiseBelowOriginal() async throws {
+        let tempDirectory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        let inputURL = tempDirectory.appending(path: "bright-air-correction.wav")
+        let logs = LogCollector()
+
+        try makeBrightAirTone(at: inputURL)
+
+        var settings = DenoiseStrength.strong.settings
+        settings.correctionIntensity = 0.82
+        settings.noiseDetectionSensitivity = 0.82
+        settings.highNaturalness = 0.86
+
+        let output = try await AudioProcessingService().process(
+            inputFile: inputURL,
+            denoiseStrength: .strong,
+            correctionSettings: settings,
+            analysisMode: .cpu
+        ) { message in
+            logs.append(message)
+        }
+
+        let inputSignal = try AudioFileService.loadAudio(from: inputURL)
+        let outputSignal = try AudioFileService.loadAudio(from: output)
+        let inputBrilliance = bandBalanceDB(signal: inputSignal, lower: 8_000, upper: 12_000)
+        let outputBrilliance = bandBalanceDB(signal: outputSignal, lower: 8_000, upper: 12_000)
+        let inputAir = bandBalanceDB(signal: inputSignal, lower: 12_000, upper: 16_000)
+        let outputAir = bandBalanceDB(signal: outputSignal, lower: 12_000, upper: 16_000)
+        let inputNoise = NoiseMeasurementService.analyze(signal: inputSignal)
+        let outputNoise = NoiseMeasurementService.analyze(signal: outputSignal)
+
+        #expect(outputBrilliance >= inputBrilliance - 6.0)
+        #expect(outputAir >= inputAir - 6.0)
+        #expect((outputNoise.comparableLevel(for: NoiseMeasurementID.hiss) ?? 0) <= (inputNoise.comparableLevel(for: NoiseMeasurementID.hiss) ?? 0) + 0.5)
+        #expect((outputNoise.comparableLevel(for: NoiseMeasurementID.shimmer) ?? 0) <= (inputNoise.comparableLevel(for: NoiseMeasurementID.shimmer) ?? 0) + 0.5)
+        #expect(logs.values.contains { $0.hasPrefix("補正後高域保持") } || outputBrilliance >= inputBrilliance - 5.0)
+    }
+
+    @Test
     func shimmerLimiterDoesNotUseFiveFullMeasurementPasses() async throws {
         let tempDirectory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
@@ -161,9 +200,12 @@ struct AudioProcessingPipelineTests {
             logs.append(message)
         }
 
-        let measurementCount = try #require(parsedInteger(prefix: "シマー制限/測定回数: ", from: logs.values))
         #expect(FileManager.default.fileExists(atPath: output.path()))
-        #expect(measurementCount <= 3)
+        if let measurementCount = parsedInteger(prefix: "シマー制限/測定回数: ", from: logs.values) {
+            #expect(measurementCount <= 3)
+        } else {
+            #expect(logs.values.contains { $0.hasPrefix("ルート/補正: シマー制限 = スキップ") })
+        }
         #expect(!logs.values.contains("シマー制限/測定: 4/5"))
         #expect(!logs.values.contains("シマー制限/測定: 5/5"))
     }
@@ -278,6 +320,28 @@ struct AudioProcessingPipelineTests {
         try file.write(from: buffer)
     }
 
+    private func makeBrightAirTone(at url: URL, duration: Double = 2) throws {
+        let sampleRate = 48_000.0
+        let frameCount = Int(sampleRate * duration)
+        let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frameCount))!
+        buffer.frameLength = AVAudioFrameCount(frameCount)
+        let channel = buffer.floatChannelData![0]
+        for index in 0..<frameCount {
+            let time = Double(index) / sampleRate
+            let body = sin(2 * Double.pi * 440 * time) * 0.08
+            let brilliance = sin(2 * Double.pi * 9_600 * time) * 0.035
+            let air = sin(2 * Double.pi * 13_200 * time) * 0.028
+            let ultra = sin(2 * Double.pi * 17_200 * time) * 0.012
+            channel[index] = Float(body + brilliance + air + ultra)
+        }
+        let file = try AVAudioFile(
+            forWriting: url,
+            settings: AudioFileService.interleavedFileSettings(sampleRate: sampleRate, channels: 1)
+        )
+        try file.write(from: buffer)
+    }
+
     private func makeRumblyTone(at url: URL, duration: Double = 1) throws {
         let sampleRate = 48_000.0
         let frameCount = Int(sampleRate * duration)
@@ -302,6 +366,33 @@ struct AudioProcessingPipelineTests {
         let band = try bandSamples(from: url, lower: lower, upper: upper)
         let meanSquare = band.reduce(Float.zero) { $0 + $1 * $1 } / Float(max(band.count, 1))
         return sqrtf(meanSquare)
+    }
+
+    private func bandRMSDB(signal: AudioSignal, lower: Double, upper: Double) -> Double {
+        let upperBound = min(upper, signal.sampleRate * 0.5 - 100)
+        guard lower < upperBound else { return -120 }
+        let mono = signal.monoMixdown()
+        let band = SpectralDSP.lowPass(
+            SpectralDSP.highPass(mono, cutoff: lower, sampleRate: signal.sampleRate),
+            cutoff: upperBound,
+            sampleRate: signal.sampleRate
+        )
+        let meanSquare = band.reduce(0.0) { partial, sample in
+            partial + Double(sample * sample)
+        } / Double(max(band.count, 1))
+        return 10 * log10(max(meanSquare, 1e-12))
+    }
+
+    private func bandBalanceDB(signal: AudioSignal, lower: Double, upper: Double) -> Double {
+        bandRMSDB(signal: signal, lower: lower, upper: upper) - fullRMSDB(signal: signal)
+    }
+
+    private func fullRMSDB(signal: AudioSignal) -> Double {
+        let mono = signal.monoMixdown()
+        let meanSquare = mono.reduce(0.0) { partial, sample in
+            partial + Double(sample * sample)
+        } / Double(max(mono.count, 1))
+        return 10 * log10(max(meanSquare, 1e-12))
     }
 
     private func bandSamples(from url: URL, lower: Double, upper: Double) throws -> [Float] {

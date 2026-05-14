@@ -84,6 +84,7 @@ enum AudioQualityReportService {
         }
 
         items.append(contentsOf: highFrequencyItems(reference: reference, target: target, stageName: stageName))
+        items.append(contentsOf: tonalBalanceItems(reference: reference, target: target, stageName: stageName))
 
         let widthChange = target.stereoWidth - reference.stereoWidth
         if abs(widthChange) >= 0.20 {
@@ -183,6 +184,99 @@ enum AudioQualityReportService {
             title: "\(stageName)の\(label)が増えています",
             detail: "\(label) が \(formatPercent(increase)) 増えています。"
         )
+    }
+
+    private static func tonalBalanceItems(
+        reference: AudioMetricSnapshot,
+        target: AudioMetricSnapshot,
+        stageName: String
+    ) -> [AudioQualityReportItem] {
+        [
+            bandDropItem(
+                id: "sparkle",
+                label: "煌びやかさ",
+                range: "8kHz〜12kHz",
+                reference: reference,
+                target: target,
+                stageName: stageName,
+                cautionDB: 2.0,
+                warningDB: 4.0
+            ),
+            bandDropItem(
+                id: "air",
+                label: "空気感",
+                range: "12kHz〜16kHz",
+                reference: reference,
+                target: target,
+                stageName: stageName,
+                cautionDB: 2.0,
+                warningDB: 4.0
+            ),
+            bandIncreaseItem(
+                id: "mud",
+                label: "こもり",
+                range: "300Hz〜1kHz",
+                reference: reference,
+                target: target,
+                stageName: stageName,
+                cautionDB: 1.5,
+                warningDB: 3.0
+            )
+        ].compactMap { $0 }
+    }
+
+    private static func bandDropItem(
+        id: String,
+        label: String,
+        range: String,
+        reference: AudioMetricSnapshot,
+        target: AudioMetricSnapshot,
+        stageName: String,
+        cautionDB: Double,
+        warningDB: Double
+    ) -> AudioQualityReportItem? {
+        guard let delta = bandDelta(id: id, reference: reference, target: target) else { return nil }
+        let drop = -delta
+        guard drop >= cautionDB else { return nil }
+
+        let severity: AudioQualityReportSeverity = drop >= warningDB ? .warning : .caution
+        return AudioQualityReportItem(
+            severity: severity,
+            title: "\(stageName)の\(label)が下がっています",
+            detail: "\(range) が \(format(drop)) dB 下がっています。抜け感や空気感が弱く聞こえる可能性があります。"
+        )
+    }
+
+    private static func bandIncreaseItem(
+        id: String,
+        label: String,
+        range: String,
+        reference: AudioMetricSnapshot,
+        target: AudioMetricSnapshot,
+        stageName: String,
+        cautionDB: Double,
+        warningDB: Double
+    ) -> AudioQualityReportItem? {
+        guard let increase = bandDelta(id: id, reference: reference, target: target), increase >= cautionDB else {
+            return nil
+        }
+
+        let severity: AudioQualityReportSeverity = increase >= warningDB ? .warning : .caution
+        return AudioQualityReportItem(
+            severity: severity,
+            title: "\(stageName)の\(label)が増えています",
+            detail: "\(range) が \(format(increase)) dB 増えています。こもりや暗さにつながる可能性があります。"
+        )
+    }
+
+    private static func bandDelta(id: String, reference: AudioMetricSnapshot, target: AudioMetricSnapshot) -> Double? {
+        guard
+            let referenceLevel = reference.bandEnergies.first(where: { $0.id == id })?.levelDB,
+            let targetLevel = target.bandEnergies.first(where: { $0.id == id })?.levelDB
+        else {
+            return nil
+        }
+        return targetLevel - referenceLevel
     }
 
     private static func format(_ value: Double) -> String {

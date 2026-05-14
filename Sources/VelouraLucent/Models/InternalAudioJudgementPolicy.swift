@@ -59,12 +59,12 @@ enum InternalAudioJudgementPolicy {
     static let masteringNoiseCleanShimmerDB = -46.0
 
     static let noiseSeverityLimits: [NoiseSeverityLimit] = [
-        NoiseSeverityLimit(id: NoiseMeasurementID.hiss, cautionDB: -54, warningDB: -48, masteringWorseningCautionDB: 2.0),
+        NoiseSeverityLimit(id: NoiseMeasurementID.hiss, cautionDB: -65, warningDB: -58, masteringWorseningCautionDB: 2.0),
         NoiseSeverityLimit(id: NoiseMeasurementID.sibilance, cautionDB: 8, warningDB: 12, masteringWorseningCautionDB: 2.0),
-        NoiseSeverityLimit(id: NoiseMeasurementID.shimmer, cautionDB: -42, warningDB: -36, masteringWorseningCautionDB: 1.5),
+        NoiseSeverityLimit(id: NoiseMeasurementID.shimmer, cautionDB: -66, warningDB: -58, masteringWorseningCautionDB: 1.5),
         NoiseSeverityLimit(id: NoiseMeasurementID.mud, cautionDB: -7, warningDB: -4, masteringWorseningCautionDB: 1.8),
         NoiseSeverityLimit(id: NoiseMeasurementID.hum, cautionDB: 6, warningDB: 10, masteringWorseningCautionDB: 2.0),
-        NoiseSeverityLimit(id: NoiseMeasurementID.rumble, cautionDB: -9, warningDB: -5, masteringWorseningCautionDB: 1.8),
+        NoiseSeverityLimit(id: NoiseMeasurementID.rumble, cautionDB: -42, warningDB: -34, masteringWorseningCautionDB: 1.8),
         NoiseSeverityLimit(id: NoiseMeasurementID.room, cautionDB: -42, warningDB: -36, masteringWorseningCautionDB: 2.0)
     ]
 

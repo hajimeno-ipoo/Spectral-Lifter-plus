@@ -185,8 +185,8 @@ struct MasteringPipelineTests {
         let output = try await MasteringService().process(inputFile: inputURL, profile: .streaming) { _ in }
         let after = try AudioComparisonService.analyze(fileURL: output)
 
-        let beforeHigh = try #require(before.bandEnergies.first { $0.id == "high" }?.levelDB)
-        let afterHigh = try #require(after.bandEnergies.first { $0.id == "high" }?.levelDB)
+        let beforeHigh = try #require(before.bandEnergies.first { $0.id == "air" }?.levelDB)
+        let afterHigh = try #require(after.bandEnergies.first { $0.id == "air" }?.levelDB)
 
         #expect(afterHigh - after.rmsDBFS <= beforeHigh - before.rmsDBFS + 3.6)
     }
@@ -251,6 +251,43 @@ struct MasteringPipelineTests {
         #expect(masteredRoom - masteredMetrics.rmsDBFS <= referenceRoom - referenceMetrics.rmsDBFS + 1.2)
         #expect((-18.2 ... -14.0).contains(masteredMetrics.integratedLoudnessLUFS))
         #expect(masteredMetrics.truePeakDBFS <= -1.5)
+    }
+
+    @Test
+    func masteringUsesOriginalReferenceWhenCorrectedInputLostAir() async throws {
+        let tempDirectory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        let originalURL = tempDirectory.appending(path: "original-air-reference.wav")
+        let correctedURL = tempDirectory.appending(path: "corrected-air-loss.wav")
+        let logs = MasteringLogCollector()
+
+        try makeBrightAirReferenceTone(at: originalURL)
+        let original = try AudioFileService.loadAudio(from: originalURL)
+        var corrected = attenuateBand(signal: original, lower: 8_000, upper: 16_000, gainDB: -10)
+        corrected = attenuateBand(signal: corrected, lower: 16_000, upper: 20_000, gainDB: -6)
+        try AudioFileService.saveAudio(corrected, to: correctedURL)
+
+        let correctedNoise = NoiseMeasurementService.analyze(signal: corrected)
+        let originalNoise = NoiseMeasurementService.analyze(signal: original)
+        let outputWithOriginal = try await MasteringService().process(
+            inputFile: correctedURL,
+            settings: MasteringProfile.streaming.settings,
+            referenceNoiseMeasurements: correctedNoise,
+            originalReferenceFile: originalURL,
+            originalReferenceNoiseMeasurements: originalNoise
+        ) { message in
+            logs.append(message)
+        }
+
+        let masteredWithOriginal = try AudioFileService.loadAudio(from: outputWithOriginal)
+        let originalBrilliance = bandBalanceDB(signal: original, lower: 8_000, upper: 12_000)
+        let withOriginalBrilliance = bandBalanceDB(signal: masteredWithOriginal, lower: 8_000, upper: 12_000)
+        let originalAir = bandBalanceDB(signal: original, lower: 12_000, upper: 16_000)
+        let withOriginalAir = bandBalanceDB(signal: masteredWithOriginal, lower: 12_000, upper: 16_000)
+
+        #expect(withOriginalBrilliance >= originalBrilliance - 6.0)
+        #expect(withOriginalAir >= originalAir - 6.0)
+        #expect(logs.values.contains { $0.hasPrefix("原音参照読み込み: ") })
     }
 
     @Test
@@ -397,6 +434,43 @@ struct MasteringPipelineTests {
         )
         try file.write(from: buffer)
     }
+
+    private func makeBrightAirReferenceTone(at url: URL) throws {
+        let sampleRate = 48_000.0
+        let frameCount = Int(sampleRate * 4)
+        let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 2)!
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frameCount))!
+        buffer.frameLength = AVAudioFrameCount(frameCount)
+        let left = buffer.floatChannelData![0]
+        let right = buffer.floatChannelData![1]
+
+        for index in 0..<frameCount {
+            let t = Double(index) / sampleRate
+            let swell = 0.76 + 0.16 * sin(2 * Double.pi * 0.28 * t)
+            let body = sin(2 * Double.pi * 210 * t) * 0.10
+                + sin(2 * Double.pi * 420 * t) * 0.040
+                + sin(2 * Double.pi * 840 * t) * 0.020
+            let presence = sin(2 * Double.pi * 6_200 * t) * 0.016 * swell
+            let brilliance = sin(2 * Double.pi * 9_600 * t) * 0.040 * swell
+            let air = sin(2 * Double.pi * 13_200 * t) * 0.032 * swell
+            let ultraAir = sin(2 * Double.pi * 17_600 * t) * 0.014 * swell
+
+            left[index] = Float(body + presence + brilliance + air + ultraAir)
+            right[index] = Float(
+                body * 0.96
+                    + presence * 0.88
+                    + brilliance * 0.70
+                    - air * 0.36
+                    - ultraAir * 0.30
+            )
+        }
+
+        let file = try AVAudioFile(
+            forWriting: url,
+            settings: AudioFileService.interleavedFileSettings(sampleRate: sampleRate, channels: 2)
+        )
+        try file.write(from: buffer)
+    }
 }
 
 private final class MasteringLogCollector: @unchecked Sendable {
@@ -446,4 +520,33 @@ private func bandRMSDB(signal: AudioSignal, lower: Double, upper: Double) -> Dou
         partial + Double(sample * sample)
     } / Double(max(band.count, 1))
     return 10 * log10(max(meanSquare, 1e-12))
+}
+
+private func bandBalanceDB(signal: AudioSignal, lower: Double, upper: Double) -> Double {
+    bandRMSDB(signal: signal, lower: lower, upper: upper) - fullRMSDB(signal: signal)
+}
+
+private func fullRMSDB(signal: AudioSignal) -> Double {
+    let mono = signal.monoMixdown()
+    let meanSquare = mono.reduce(0.0) { partial, sample in
+        partial + Double(sample * sample)
+    } / Double(max(mono.count, 1))
+    return 10 * log10(max(meanSquare, 1e-12))
+}
+
+private func attenuateBand(signal: AudioSignal, lower: Double, upper: Double, gainDB: Float) -> AudioSignal {
+    let upperBound = min(upper, signal.sampleRate * 0.5 - 100)
+    guard lower < upperBound else { return signal }
+    let gain = powf(10, gainDB / 20)
+    let channels = signal.channels.map { channel in
+        let band = SpectralDSP.lowPass(
+            SpectralDSP.highPass(channel, cutoff: lower, sampleRate: signal.sampleRate),
+            cutoff: upperBound,
+            sampleRate: signal.sampleRate
+        )
+        return channel.indices.map { index in
+            channel[index] + band[index] * (gain - 1)
+        }
+    }
+    return AudioSignal(channels: channels, sampleRate: signal.sampleRate)
 }

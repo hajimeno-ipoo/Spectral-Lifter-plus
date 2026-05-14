@@ -6,7 +6,9 @@ struct NoiseMeasurementServiceTests {
     @Test
     func detectsHumProminenceWithoutTreatingAllLowEnergyAsHum() {
         let clean = testSignal { time in
-            Float(sin(2 * Double.pi * 440 * time) * 0.08)
+            let tone = sin(2 * Double.pi * 440 * time) * 0.08
+            let lowInstrument = sin(2 * Double.pi * 82 * time) * 0.04
+            return Float(tone + lowInstrument)
         }
         let hum = testSignal { time in
             let tone = sin(2 * Double.pi * 440 * time) * 0.08
@@ -17,6 +19,7 @@ struct NoiseMeasurementServiceTests {
         let cleanValue = value("hum", in: NoiseMeasurementService.analyze(signal: clean))
         let humValue = value("hum", in: NoiseMeasurementService.analyze(signal: hum))
 
+        #expect(cleanValue < 6)
         #expect(humValue > cleanValue + 4)
     }
 
@@ -45,8 +48,7 @@ struct NoiseMeasurementServiceTests {
         }
         let shimmering = testSignal { time in
             let base = sin(2 * Double.pi * 440 * time) * 0.08
-            let gate = Int(time * 16) % 5 == 0 ? 1.0 : 0.0
-            let shimmer = sin(2 * Double.pi * 11_500 * time) * 0.04 * gate
+            let shimmer = sin(2 * Double.pi * 12_000 * time) * 0.01
             return Float(base + shimmer)
         }
 
@@ -57,7 +59,7 @@ struct NoiseMeasurementServiceTests {
     }
 
     @Test
-    func comparableLevelsIgnoreSimpleLoudnessGain() {
+    func measuredLevelsReflectActualFileLevel() {
         let base = testSignal { time in
             let tone = sin(2 * Double.pi * 440 * time) * 0.08
             let hiss = sin(2 * Double.pi * 12_000 * time) * 0.006
@@ -71,7 +73,7 @@ struct NoiseMeasurementServiceTests {
         let baseHiss = value("hiss", in: NoiseMeasurementService.analyze(signal: base))
         let louderHiss = value("hiss", in: NoiseMeasurementService.analyze(signal: louder))
 
-        #expect(Swift.abs(baseHiss - louderHiss) < 0.7)
+        #expect(louderHiss > baseHiss + 5.0)
     }
 
     private func value(_ id: String, in snapshot: NoiseMeasurementSnapshot) -> Double {

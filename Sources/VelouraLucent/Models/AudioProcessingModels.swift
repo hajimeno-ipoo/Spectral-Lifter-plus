@@ -21,10 +21,14 @@ enum AudioBandCatalog {
     ]
 
     static let comparisonBands: [AudioBandDescriptor] = [
-        AudioBandDescriptor(id: "low", label: "低域", rangeDescription: "0-5kHz", lowerBound: 0, upperBound: 5_000),
-        AudioBandDescriptor(id: "presence", label: "中高域", rangeDescription: "5-10kHz", lowerBound: 5_000, upperBound: 10_000),
-        AudioBandDescriptor(id: "high", label: "高域", rangeDescription: "10-16kHz", lowerBound: 10_000, upperBound: 16_000),
-        AudioBandDescriptor(id: "air", label: "超高域", rangeDescription: "16-24kHz", lowerBound: 16_000, upperBound: 24_000)
+        AudioBandDescriptor(id: "rumble", label: "低域ノイズ", rangeDescription: "20-150Hz", lowerBound: 20, upperBound: 150),
+        AudioBandDescriptor(id: "warmth", label: "太さ", rangeDescription: "150-300Hz", lowerBound: 150, upperBound: 300),
+        AudioBandDescriptor(id: "mud", label: "こもり", rangeDescription: "300Hz-1kHz", lowerBound: 300, upperBound: 1_000),
+        AudioBandDescriptor(id: "core", label: "声の芯", rangeDescription: "1-4kHz", lowerBound: 1_000, upperBound: 4_000),
+        AudioBandDescriptor(id: "presence", label: "刺さり", rangeDescription: "4-8kHz", lowerBound: 4_000, upperBound: 8_000),
+        AudioBandDescriptor(id: "sparkle", label: "煌びやかさ", rangeDescription: "8-12kHz", lowerBound: 8_000, upperBound: 12_000),
+        AudioBandDescriptor(id: "air", label: "空気感", rangeDescription: "12-16kHz", lowerBound: 12_000, upperBound: 16_000),
+        AudioBandDescriptor(id: "ultraAir", label: "超高域", rangeDescription: "16-20kHz", lowerBound: 16_000, upperBound: 20_000)
     ]
 
     static let masteringBands: [AudioBandDescriptor] = [
@@ -262,6 +266,27 @@ struct NoiseMeasurementValue: Sendable, Equatable, Identifiable {
     let label: String
     let comparableLevelDB: Double
     let measuredLevelDB: Double
+    let unitLabel: String
+    let measurementDescription: String
+    let lowerIsBetter: Bool
+
+    init(
+        id: String,
+        label: String,
+        comparableLevelDB: Double,
+        measuredLevelDB: Double,
+        unitLabel: String = "dB",
+        measurementDescription: String = "",
+        lowerIsBetter: Bool = true
+    ) {
+        self.id = id
+        self.label = label
+        self.comparableLevelDB = comparableLevelDB
+        self.measuredLevelDB = measuredLevelDB
+        self.unitLabel = unitLabel
+        self.measurementDescription = measurementDescription
+        self.lowerIsBetter = lowerIsBetter
+    }
 }
 
 enum NoiseCheckSeverity: Sendable, Equatable {
@@ -272,6 +297,7 @@ enum NoiseCheckSeverity: Sendable, Equatable {
 
 struct NoiseCheckReport: Sendable, Equatable {
     let rows: [NoiseCheckRow]
+    let recommendedActions: [NoiseCheckAction]
 
     var severity: NoiseCheckSeverity {
         if rows.contains(where: { $0.severity == .warning }) {
@@ -287,12 +313,16 @@ struct NoiseCheckReport: Sendable, Equatable {
 struct NoiseCheckRow: Sendable, Equatable, Identifiable {
     let id: String
     let label: String
+    let measurementDescription: String
+    let unitLabel: String
+    let displayScale: NoiseCheckDisplayScale
     let input: NoiseCheckValue?
     let corrected: NoiseCheckValue?
     let mastered: NoiseCheckValue?
     let correctionDeltaDB: Double?
     let masteringDeltaDB: Double?
     let severity: NoiseCheckSeverity
+    let summaryText: String
     let correctionEffectText: String
     let masteringEffectText: String
     let recommendedActions: [NoiseCheckAction]
@@ -307,13 +337,32 @@ struct NoiseCheckAction: Sendable, Equatable, Identifiable {
     let id: String
     let stage: Stage
     let title: String
-    let detail: String
+    let currentValue: String
+    let recommendedValue: String
+    let changeValue: String
+    let reason: String
+    let expectedEffect: String
+    let caution: String
 }
 
 struct NoiseCheckValue: Sendable, Equatable {
     let levelDB: Double
     let measuredLevelDB: Double
+    let unitLabel: String
+    let lowerIsBetter: Bool
     let severity: NoiseCheckSeverity
+}
+
+struct NoiseCheckDisplayScale: Sendable, Equatable {
+    let minimum: Double
+    let maximum: Double
+
+    func ratio(for value: Double?) -> Double {
+        guard let value else { return 0 }
+        let span = max(maximum - minimum, 1.0)
+        let normalized = (value - minimum) / span
+        return max(0.04, min(1.0, normalized))
+    }
 }
 
 struct BandEnergyMetric: Sendable, Identifiable {

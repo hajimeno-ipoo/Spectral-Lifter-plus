@@ -10,6 +10,8 @@ struct MasteringService {
         settings: MasteringSettings,
         initialAnalysis: MasteringAnalysis? = nil,
         referenceNoiseMeasurements: NoiseMeasurementSnapshot? = nil,
+        originalReferenceFile: URL? = nil,
+        originalReferenceNoiseMeasurements: NoiseMeasurementSnapshot? = nil,
         logHandler: @escaping @Sendable (String) -> Void
     ) async throws -> URL {
         let outputURL = Self.temporaryOutputURL(for: inputFile)
@@ -23,6 +25,14 @@ struct MasteringService {
             logger.log("解析モード: マスタリングCPU")
             let signal = try recorder.measure(label: "読み込み", logger: logger) {
                 try AudioFileService.loadAudio(from: inputFile)
+            }
+            let originalReferenceSignal: AudioSignal?
+            if let originalReferenceFile {
+                originalReferenceSignal = try recorder.measure(label: "原音参照読み込み", logger: logger) {
+                    try AudioFileService.loadAudio(from: originalReferenceFile)
+                }
+            } else {
+                originalReferenceSignal = nil
             }
             let analysis: MasteringAnalysis
             if let initialAnalysis {
@@ -51,6 +61,8 @@ struct MasteringService {
                 analysis: analysis,
                 settings: settings,
                 referenceNoiseMeasurements: routeNoiseMeasurements,
+                originalReferenceSignal: originalReferenceSignal,
+                originalReferenceNoiseMeasurements: originalReferenceNoiseMeasurements,
                 logger: logger
             )
             logger.log(MasteringStep.save.rawValue)
