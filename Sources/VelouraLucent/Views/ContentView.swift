@@ -401,22 +401,22 @@ struct ContentView: View {
     }
 
     private func noiseCheckCard(_ report: NoiseCheckReport) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("ノイズチェック")
-                        .font(.title3.weight(.bold))
+                        .font(.title2.weight(.bold))
                     Text("入力、補正後、マスタリング後を実測し、ノイズ種別ごとに改善量と戻り量を判定します。")
-                        .font(.callout)
+                        .font(.body)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
                 Text(noiseCheckSeverityText(report.severity))
-                    .font(.headline.weight(.semibold))
+                    .font(.title3.weight(.semibold))
                     .foregroundStyle(noiseCheckSeverityColor(report.severity))
             }
 
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 12) {
                 ForEach(report.rows) { row in
                     noiseCheckRow(row)
                 }
@@ -432,27 +432,27 @@ struct ContentView: View {
                 }
             }
         }
-        .padding(16)
+        .padding(22)
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
     }
 
     private func noiseCheckRow(_ row: NoiseCheckRow) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack {
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 4) {
                     Text(row.label)
-                        .font(.headline.weight(.semibold))
+                        .font(.title3.weight(.semibold))
                     Text(row.measurementDescription)
-                        .font(.caption)
+                        .font(.body)
                         .foregroundStyle(.secondary)
                     Text(row.displayDescription)
-                        .font(.caption)
+                        .font(.body)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
                 Text(row.summaryText)
-                    .font(.caption.weight(.bold))
+                    .font(.headline.weight(.bold))
                     .foregroundStyle(noiseCheckSeverityColor(row.severity))
             }
 
@@ -462,11 +462,11 @@ struct ContentView: View {
 
             if row.recommendedActions.isEmpty {
                 Text("追加調整は不要です。")
-                    .font(.caption)
+                    .font(.body)
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(12)
+        .padding(18)
         .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
     }
 
@@ -478,57 +478,62 @@ struct ContentView: View {
         deltaText: String? = nil,
         delta: Double? = nil
     ) -> some View {
-        HStack(spacing: 10) {
+        HStack(alignment: .center, spacing: 16) {
             Text(title)
-                .font(.caption.weight(.semibold))
-                .frame(width: 48, alignment: .leading)
+                .font(.body.weight(.semibold))
+                .frame(width: 72, alignment: .leading)
             GeometryReader { proxy in
                 let width = proxy.size.width
                 let normalized = noiseLevelRatio(value?.levelDB, row: row)
                 ZStack(alignment: .leading) {
                     RoundedRectangle(cornerRadius: 4)
-                        .fill(Color.secondary.opacity(0.14))
-                        .frame(height: 8)
-                    RoundedRectangle(cornerRadius: 4)
-                        .fill(value == nil ? Color.secondary.opacity(0.24) : color.opacity(0.78))
-                        .frame(width: max(2, width * normalized), height: 8)
+                        .fill(Color.secondary.opacity(value == nil ? 0.20 : 0.14))
+                        .frame(width: value == nil ? max(2, width * normalized) : width, height: 12)
+                    if value != nil {
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(color.opacity(0.78))
+                            .frame(width: max(3, width * normalized), height: 12)
+                    }
                 }
             }
-            .frame(height: 10)
-            .frame(maxWidth: 260)
+            .frame(height: 14)
+            .frame(maxWidth: .infinity)
             Text(value.map { formatNoiseValue($0) } ?? "--")
-                .font(.caption.monospacedDigit().weight(.semibold))
-                .frame(width: 82, alignment: .trailing)
+                .font(.body.monospacedDigit().weight(.semibold))
+                .frame(width: 120, alignment: .trailing)
             if let deltaText {
                 Text(deltaText)
-                    .font(.caption.monospacedDigit().weight(.semibold))
+                    .font(.body.monospacedDigit().weight(.semibold))
                     .foregroundStyle(noiseDeltaColor(delta, lowerIsBetter: true))
-                    .frame(width: 154, alignment: .leading)
+                    .frame(width: 190, alignment: .leading)
+            } else {
+                Text("")
+                    .frame(width: 190, alignment: .leading)
             }
         }
     }
 
     private func noiseCheckActionCard(_ action: NoiseCheckAction) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text(action.title)
-                    .font(.subheadline.weight(.semibold))
+                    .font(.headline.weight(.semibold))
                 Spacer()
                 Text("\(action.currentValue) → \(action.recommendedValue)（\(action.changeValue)）")
-                    .font(.caption.monospacedDigit().weight(.semibold))
+                    .font(.headline.monospacedDigit().weight(.semibold))
                     .foregroundStyle(.orange)
             }
             Text(action.reason)
-                .font(.caption)
+                .font(.body)
                 .foregroundStyle(.secondary)
             Text(action.expectedEffect)
-                .font(.caption)
+                .font(.body)
                 .foregroundStyle(.secondary)
             Text(action.caution)
-                .font(.caption)
+                .font(.body)
                 .foregroundStyle(.secondary)
         }
-        .padding(10)
+        .padding(16)
         .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
     }
 
