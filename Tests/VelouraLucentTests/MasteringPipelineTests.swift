@@ -254,6 +254,29 @@ struct MasteringPipelineTests {
     }
 
     @Test
+    func masteringRestoresFinalLoudnessAfterNoiseGuards() async throws {
+        let tempDirectory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        let inputURL = tempDirectory.appending(path: "final-loudness-restore.wav")
+        let logs = MasteringLogCollector()
+
+        try makeMusicalAirTone(at: inputURL)
+
+        let output = try await MasteringService().process(inputFile: inputURL, profile: .streaming) { message in
+            logs.append(message)
+        }
+        let masteredMetrics = try AudioComparisonService.analyze(fileURL: output)
+
+        #expect(FileManager.default.fileExists(atPath: output.path()))
+        #expect(masteredMetrics.integratedLoudnessLUFS >= Double(MasteringProfile.streaming.settings.targetLoudness) - 1.2)
+        #expect(masteredMetrics.truePeakDBFS <= Double(MasteringProfile.streaming.settings.peakCeilingDB) + 0.05)
+        #expect(
+            logs.values.contains { $0.hasPrefix("最終音量復帰: ") }
+                || masteredMetrics.integratedLoudnessLUFS >= Double(MasteringProfile.streaming.settings.targetLoudness) - 0.6
+        )
+    }
+
+    @Test
     func masteringUsesOriginalReferenceWhenCorrectedInputLostAir() async throws {
         let tempDirectory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)

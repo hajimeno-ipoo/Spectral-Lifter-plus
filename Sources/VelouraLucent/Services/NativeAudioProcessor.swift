@@ -341,14 +341,20 @@ struct NativeAudioProcessor {
                 signal: shimmerLimited,
                 reference: signal,
                 referenceMeasurements: routeNoiseMeasurements,
+                settings: correctionSettings,
                 logger: logger
             )
         }
+        let mudControlled = constrainCorrectionMudIncrease(
+            signal: highPreserved,
+            referenceMeasurements: routeNoiseMeasurements,
+            logger: logger
+        )
 
         logger?.start(.peakSafety)
         logger?.log("ピークを保護します")
         let finalized = measure("peakSafety", label: "ピーク保護", recorder: benchmarkRecorder, logger: logger, progressStep: .peakSafety) {
-            PeakSafetyLimiter().process(signal: highPreserved)
+            PeakSafetyLimiter().process(signal: mudControlled)
         }
 
         logger?.start(ProcessingStep.save)
@@ -423,6 +429,7 @@ struct NativeAudioProcessor {
         signal: AudioSignal,
         reference: AudioSignal,
         referenceMeasurements: NoiseMeasurementSnapshot,
+        settings: CorrectionSettings,
         logger: AudioProcessingLogger?
     ) -> AudioSignal {
         struct Rule {
@@ -439,12 +446,39 @@ struct NativeAudioProcessor {
             Rule(label: "12-16kHz", lower: 12_000, upper: 16_000, maxDropDB: 4.0, maxBoostDB: 26.0),
             Rule(label: "16kHz以上", lower: 16_000, upper: 20_000, maxDropDB: 6.0, maxBoostDB: 10.0)
         ]
+        let absoluteMaxBoost = referenceMeasurements.comparableLevel(for: NoiseMeasurementID.hiss).map { hiss in
+            settings.correctionIntensity >= 0.70 || hiss > -60 ? 6.0 : 12.0
+        } ?? (settings.correctionIntensity >= 0.70 ? 6.0 : 12.0)
+        let absoluteMaxDrop = settings.correctionIntensity >= 0.70 ? 9.0 : 7.0
+        let absoluteRules = [
+            Rule(label: "絶対量 8-12kHz", lower: 8_000, upper: 12_000, maxDropDB: absoluteMaxDrop, maxBoostDB: absoluteMaxBoost),
+            Rule(label: "絶対量 12-16kHz", lower: 12_000, upper: 16_000, maxDropDB: absoluteMaxDrop, maxBoostDB: absoluteMaxBoost)
+        ]
 
         var current = signal
         var didApply = false
         for rule in rules {
             let currentDB = bandBalanceDB(signal: current, lower: rule.lower, upper: rule.upper)
             let referenceDB = bandBalanceDB(signal: reference, lower: rule.lower, upper: rule.upper)
+            guard currentDB.isFinite, referenceDB.isFinite else { continue }
+
+            let targetDB = referenceDB - rule.maxDropDB
+            let neededBoostDB = targetDB - currentDB
+            guard neededBoostDB > 0.25 else { continue }
+
+            let boostDB = min(neededBoostDB, rule.maxBoostDB)
+            let gain = powf(10, Float(boostDB) / 20)
+            let sampleRate = current.sampleRate
+            let channels = mapChannelsConcurrently(current.channels) {
+                scaleCorrectionBand($0, sampleRate: sampleRate, lower: rule.lower, upper: rule.upper, gain: gain)
+            }
+            current = AudioSignal(channels: channels, sampleRate: sampleRate)
+            didApply = true
+            logger?.log("補正後高域保持/\(rule.label): +\(String(format: "%.1f", boostDB)) dB")
+        }
+        for rule in absoluteRules {
+            let currentDB = comparisonBandLevelDB(signal: current, lower: rule.lower, upper: rule.upper)
+            let referenceDB = comparisonBandLevelDB(signal: reference, lower: rule.lower, upper: rule.upper)
             guard currentDB.isFinite, referenceDB.isFinite else { continue }
 
             let targetDB = referenceDB - rule.maxDropDB
@@ -477,11 +511,15 @@ struct NativeAudioProcessor {
         referenceMeasurements: NoiseMeasurementSnapshot,
         logger: AudioProcessingLogger?
     ) -> AudioSignal {
+        let fallbackMeasurements = NoiseMeasurementService.analyze(signal: fallback)
+        let fallbackSibilanceReturn = noiseDelta(id: NoiseMeasurementID.sibilance, reference: referenceMeasurements, current: fallbackMeasurements)
         let candidates: [(mix: Float, signal: AudioSignal)] = [
             (1.0, signal),
             (0.75, blendSignals(base: fallback, boosted: signal, mix: 0.75)),
             (0.50, blendSignals(base: fallback, boosted: signal, mix: 0.50)),
-            (0.25, blendSignals(base: fallback, boosted: signal, mix: 0.25))
+            (0.25, blendSignals(base: fallback, boosted: signal, mix: 0.25)),
+            (0.10, blendSignals(base: fallback, boosted: signal, mix: 0.10)),
+            (0.05, blendSignals(base: fallback, boosted: signal, mix: 0.05))
         ]
 
         for candidate in candidates {
@@ -489,7 +527,11 @@ struct NativeAudioProcessor {
             let hissReturn = noiseDelta(id: NoiseMeasurementID.hiss, reference: referenceMeasurements, current: measurements)
             let shimmerReturn = noiseDelta(id: NoiseMeasurementID.shimmer, reference: referenceMeasurements, current: measurements)
             let sibilanceReturn = noiseDelta(id: NoiseMeasurementID.sibilance, reference: referenceMeasurements, current: measurements)
-            guard hissReturn <= 2.0, shimmerReturn <= 2.0, sibilanceReturn <= 1.5 else { continue }
+            let normalSafe = hissReturn <= 2.0 && shimmerReturn <= 2.0 && sibilanceReturn <= 1.5
+            let highNoiseSafe = hissReturn <= -3.0
+                && shimmerReturn <= -3.0
+                && sibilanceReturn <= fallbackSibilanceReturn + 0.25
+            guard normalSafe || highNoiseSafe else { continue }
             if candidate.mix < 1 {
                 logger?.log("補正後高域保持: ノイズ戻り抑制 mix \(String(format: "%.2f", candidate.mix))")
             }
@@ -498,6 +540,38 @@ struct NativeAudioProcessor {
 
         logger?.log("補正後高域保持: ノイズ戻り抑制で見送り")
         return fallback
+    }
+
+    private func constrainCorrectionMudIncrease(
+        signal: AudioSignal,
+        referenceMeasurements: NoiseMeasurementSnapshot,
+        logger: AudioProcessingLogger?
+    ) -> AudioSignal {
+        let currentMeasurements = NoiseMeasurementService.analyze(signal: signal)
+        guard let referenceMud = referenceMeasurements.comparableLevel(for: NoiseMeasurementID.mud),
+              let currentMud = currentMeasurements.comparableLevel(for: NoiseMeasurementID.mud)
+        else {
+            return signal
+        }
+
+        let allowedIncreaseDB = 0.5
+        let excessDB = currentMud - referenceMud - allowedIncreaseDB
+        guard excessDB > 0.25 else { return signal }
+
+        let targetGainDB = -min(excessDB * 0.85, 3.0)
+        let candidates = [targetGainDB, targetGainDB * 0.75, targetGainDB * 0.50, targetGainDB * 0.25]
+        for gainDB in candidates {
+            let candidate = scaleCorrectionSignalBand(signal: signal, lower: 300, upper: 1_000, gainDB: gainDB)
+            let candidateMud = NoiseMeasurementService.analyze(signal: candidate).comparableLevel(for: NoiseMeasurementID.mud) ?? currentMud
+            if candidateMud <= referenceMud + allowedIncreaseDB {
+                logger?.log("低中域残り: こもり悪化を抑制 \(String(format: "%.1f", gainDB)) dB")
+                return candidate
+            }
+        }
+
+        let limited = scaleCorrectionSignalBand(signal: signal, lower: 300, upper: 1_000, gainDB: targetGainDB)
+        logger?.log("低中域残り: こもり悪化を抑制 \(String(format: "%.1f", targetGainDB)) dB")
+        return limited
     }
 
     private func blendSignals(base: AudioSignal, boosted: AudioSignal, mix: Float) -> AudioSignal {
@@ -527,6 +601,15 @@ struct NativeAudioProcessor {
         }
     }
 
+    private func scaleCorrectionSignalBand(signal: AudioSignal, lower: Double, upper: Double, gainDB: Double) -> AudioSignal {
+        let gain = powf(10, Float(gainDB) / 20)
+        let sampleRate = signal.sampleRate
+        let channels = mapChannelsConcurrently(signal.channels) {
+            scaleCorrectionBand($0, sampleRate: sampleRate, lower: lower, upper: upper, gain: gain)
+        }
+        return AudioSignal(channels: channels, sampleRate: sampleRate)
+    }
+
     private func bandRMSDB(signal: AudioSignal, lower: Double, upper: Double) -> Double {
         let upperBound = min(upper, signal.sampleRate * 0.5 - 100)
         guard lower < upperBound else { return -120 }
@@ -544,6 +627,31 @@ struct NativeAudioProcessor {
 
     private func bandBalanceDB(signal: AudioSignal, lower: Double, upper: Double) -> Double {
         bandRMSDB(signal: signal, lower: lower, upper: upper) - fullRMSDB(signal: signal)
+    }
+
+    private func comparisonBandLevelDB(signal: AudioSignal, lower: Double, upper: Double) -> Double {
+        let mono = signal.monoMixdown()
+        guard !mono.isEmpty else { return -120 }
+        let fftSize = 16_384
+        let hopSize = 8_192
+        let spectrogram = SpectralDSP.stft(mono, fftSize: fftSize, hopSize: hopSize)
+        let frequencyStep = signal.sampleRate / Double(fftSize)
+        let startBin = max(0, min(spectrogram.binCount - 1, Int(lower / frequencyStep)))
+        let endBin = max(startBin + 1, min(spectrogram.binCount, Int(ceil(upper / frequencyStep))))
+        guard endBin > startBin else { return -120 }
+
+        var sum = 0.0
+        for frameIndex in 0..<spectrogram.frameCount {
+            var power = 0.0
+            for binIndex in startBin..<endBin {
+                let index = spectrogram.storageIndex(frameIndex: frameIndex, binIndex: binIndex)
+                let real = Double(spectrogram.real[index])
+                let imag = Double(spectrogram.imag[index])
+                power += real * real + imag * imag
+            }
+            sum += sqrt(power / Double(endBin - startBin))
+        }
+        return 20 * log10(max(sum / Double(max(spectrogram.frameCount, 1)), 1e-12))
     }
 
     private func fullRMSDB(signal: AudioSignal) -> Double {

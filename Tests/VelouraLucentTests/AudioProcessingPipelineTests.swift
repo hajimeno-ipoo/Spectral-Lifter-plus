@@ -178,6 +178,38 @@ struct AudioProcessingPipelineTests {
     }
 
     @Test
+    func correctionDoesNotLeaveMudWorseThanOriginal() async throws {
+        let tempDirectory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        let inputURL = tempDirectory.appending(path: "muddy-correction.wav")
+        let logs = LogCollector()
+
+        try makeMuddyTone(at: inputURL)
+
+        var settings = DenoiseStrength.strong.settings
+        settings.lowMidCleanup = 0.82
+        settings.correctionIntensity = 0.72
+
+        let output = try await AudioProcessingService().process(
+            inputFile: inputURL,
+            denoiseStrength: .strong,
+            correctionSettings: settings,
+            analysisMode: .cpu
+        ) { message in
+            logs.append(message)
+        }
+
+        let inputSignal = try AudioFileService.loadAudio(from: inputURL)
+        let outputSignal = try AudioFileService.loadAudio(from: output)
+        let inputMud = try #require(NoiseMeasurementService.analyze(signal: inputSignal).comparableLevel(for: NoiseMeasurementID.mud))
+        let outputMud = try #require(NoiseMeasurementService.analyze(signal: outputSignal).comparableLevel(for: NoiseMeasurementID.mud))
+
+        #expect(FileManager.default.fileExists(atPath: output.path()))
+        #expect(outputMud <= inputMud + 0.5)
+        #expect(logs.values.contains { $0.hasPrefix("低中域残り: こもり悪化を抑制") } || outputMud <= inputMud)
+    }
+
+    @Test
     func shimmerLimiterDoesNotUseFiveFullMeasurementPasses() async throws {
         let tempDirectory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
@@ -354,6 +386,28 @@ struct AudioProcessingPipelineTests {
             let body = sin(2 * Double.pi * 440 * time) * 0.04
             let rumble = sin(2 * Double.pi * 50 * time) * 0.08
             channel[index] = Float(body + rumble)
+        }
+        let file = try AVAudioFile(
+            forWriting: url,
+            settings: AudioFileService.interleavedFileSettings(sampleRate: sampleRate, channels: 1)
+        )
+        try file.write(from: buffer)
+    }
+
+    private func makeMuddyTone(at url: URL, duration: Double = 2) throws {
+        let sampleRate = 48_000.0
+        let frameCount = Int(sampleRate * duration)
+        let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frameCount))!
+        buffer.frameLength = AVAudioFrameCount(frameCount)
+        let channel = buffer.floatChannelData![0]
+        for index in 0..<frameCount {
+            let time = Double(index) / sampleRate
+            let body = sin(2 * Double.pi * 190 * time) * 0.06
+            let lowMid = sin(2 * Double.pi * 520 * time) * 0.08
+                + sin(2 * Double.pi * 820 * time) * 0.055
+            let air = sin(2 * Double.pi * 9_600 * time) * 0.010
+            channel[index] = Float(body + lowMid + air)
         }
         let file = try AVAudioFile(
             forWriting: url,
