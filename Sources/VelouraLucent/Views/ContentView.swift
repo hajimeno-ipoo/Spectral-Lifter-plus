@@ -18,9 +18,8 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 18) {
                 header
                 inputSection
-                correctionSection
+                settingsSection
                 outputSection
-                masteringSection
                 PreviewPanelView(
                     preview: preview,
                     inputFileURL: job.inputFile,
@@ -86,33 +85,10 @@ struct ContentView: View {
         }
     }
 
-    private var correctionSection: some View {
+    private var settingsSection: some View {
         VStack(alignment: .leading, spacing: 14) {
-            CorrectionSettingsPanel(job: job)
-            HStack(alignment: .top, spacing: 16) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("解析モード")
-                        .font(.subheadline.weight(.semibold))
-                    Picker("解析モード", selection: $job.selectedAnalysisMode) {
-                        ForEach(AudioAnalysisMode.allCases) { mode in
-                            Text(mode.title).tag(mode)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .disabled(job.isProcessing)
-                }
-
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("説明")
-                        .font(.subheadline.weight(.semibold))
-                    Text(job.selectedAnalysisMode.summary)
-                        .foregroundStyle(job.selectedAnalysisMode == .experimentalMetal ? .orange : .secondary)
-                    Text(job.selectedAnalysisMode.resolvedSummary)
-                        .font(.caption)
-                        .foregroundStyle(job.selectedAnalysisMode.resolvedMode == .experimentalMetal ? .orange : .secondary)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
+            DetailedSettingsPanel(job: job)
+            analysisModeSection
         }
     }
 
@@ -125,10 +101,6 @@ struct ContentView: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
         }
-    }
-
-    private var masteringSection: some View {
-        MasteringSettingsPanel(job: job)
     }
 
     private var correctionActionSection: some View {
@@ -153,6 +125,33 @@ struct ContentView: View {
                 statusColor: correctionStatusColor,
                 captionText: job.isAnalyzingMetrics ? "比較を更新中" : "ノイズ除去は「\(job.selectedDenoiseStrength.title)」です"
             )
+        }
+    }
+
+    private var analysisModeSection: some View {
+        HStack(alignment: .top, spacing: 16) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("解析モード")
+                    .font(.subheadline.weight(.semibold))
+                Picker("解析モード", selection: $job.selectedAnalysisMode) {
+                    ForEach(AudioAnalysisMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .disabled(job.isProcessing)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("説明")
+                    .font(.subheadline.weight(.semibold))
+                Text(job.selectedAnalysisMode.summary)
+                    .foregroundStyle(job.selectedAnalysisMode == .experimentalMetal ? .orange : .secondary)
+                Text(job.selectedAnalysisMode.resolvedSummary)
+                    .font(.caption)
+                    .foregroundStyle(job.selectedAnalysisMode.resolvedMode == .experimentalMetal ? .orange : .secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -2051,7 +2050,11 @@ struct ContentView: View {
                     }
                 }
 
-                let correctedArtifacts = try await makeAudioAnalysisArtifacts(for: outputFile)
+                let correctedArtifacts = try await makeAudioAnalysisArtifacts(for: outputFile) { message in
+                    Task { @MainActor in
+                        job.appendLog(message)
+                    }
+                }
 
                 await MainActor.run {
                     guard isCurrentInputSelection(selectionID, inputFile: inputFile) else { return }
@@ -2099,7 +2102,11 @@ struct ContentView: View {
                     }
                 }
 
-                let masteredArtifacts = try await makeAudioAnalysisArtifacts(for: masteredFile, includeMasteringAnalysis: false)
+                let masteredArtifacts = try await makeAudioAnalysisArtifacts(for: masteredFile, includeMasteringAnalysis: false) { message in
+                    Task { @MainActor in
+                        job.appendMasteringLog(message)
+                    }
+                }
 
                 await MainActor.run {
                     guard isCurrentMasteringSelection(selectionID, correctedFile: correctedFile) else { return }
@@ -2157,7 +2164,8 @@ struct ContentView: View {
                     for: url,
                     includePreview: false,
                     includeMasteringAnalysis: target == .corrected,
-                    correctionAnalysisMode: target == .input ? job.selectedAnalysisMode.resolvedMode : nil
+                    correctionAnalysisMode: target == .input ? job.selectedAnalysisMode.resolvedMode : nil,
+                    logHandler: displayAnalysisLogHandler(for: target)
                 )
 
                 await MainActor.run {
@@ -2192,12 +2200,17 @@ struct ContentView: View {
         }
     }
 
-    private func makeAudioAnalysisArtifacts(for url: URL, includeMasteringAnalysis: Bool = true) async throws -> AudioAnalysisArtifacts {
+    private func makeAudioAnalysisArtifacts(
+        for url: URL,
+        includeMasteringAnalysis: Bool = true,
+        logHandler: (@Sendable (String) -> Void)? = nil
+    ) async throws -> AudioAnalysisArtifacts {
         try await makeAnalysisArtifacts(
             for: url,
             includePreview: true,
             includeMasteringAnalysis: includeMasteringAnalysis,
-            correctionAnalysisMode: nil
+            correctionAnalysisMode: nil,
+            logHandler: logHandler
         )
     }
 
@@ -2205,16 +2218,29 @@ struct ContentView: View {
         for url: URL,
         includePreview: Bool,
         includeMasteringAnalysis: Bool,
-        correctionAnalysisMode: AudioAnalysisMode?
+        correctionAnalysisMode: AudioAnalysisMode?,
+        logHandler: (@Sendable (String) -> Void)? = nil
     ) async throws -> AudioAnalysisArtifacts {
         try await Task.detached(priority: .utility) {
-            let signal = try AudioFileService.loadAudio(from: url)
-            async let previewSnapshot = includePreview ? AudioFileService.makePreviewSnapshot(from: signal) : nil
-            async let metrics = try await AudioComparisonService.analyzeConcurrently(signal: signal)
-            async let masteringAnalysis = includeMasteringAnalysis ? MasteringAnalysisService.analyze(signal: signal) : nil
-            async let correctionAnalysis = correctionAnalysisMode.map { AudioAnalyzer(mode: $0).analyze(signal: signal) }
-            async let noiseMeasurements = NoiseMeasurementService.analyze(signal: signal)
-            async let spectrogram = AudioFileService.makeSpectrogramSnapshot(from: signal)
+            let signal = try await Self.measureDisplayAnalysis("ファイル読み込み", logHandler: logHandler) {
+                try AudioFileService.loadAudio(from: url)
+            }
+            async let previewSnapshot: AudioPreviewSnapshot? = Self.measureOptionalDisplayAnalysis("プレビュー生成", isEnabled: includePreview, logHandler: logHandler) {
+                AudioFileService.makePreviewSnapshot(from: signal)
+            }
+            async let metrics = Self.measureDisplayAnalysis("比較指標", logHandler: logHandler) {
+                try await AudioComparisonService.analyzeConcurrently(signal: signal)
+            }
+            async let masteringAnalysis: MasteringAnalysis? = Self.measureOptionalDisplayAnalysis("マスタリング解析", isEnabled: includeMasteringAnalysis, logHandler: logHandler) {
+                MasteringAnalysisService.analyze(signal: signal)
+            }
+            async let correctionAnalysis: AnalysisData? = Self.measureCorrectionAnalysis(correctionAnalysisMode, signal: signal, logHandler: logHandler)
+            async let noiseMeasurements = Self.measureDisplayAnalysis("ノイズ測定", logHandler: logHandler) {
+                NoiseMeasurementService.analyze(signal: signal)
+            }
+            async let spectrogram = Self.measureDisplayAnalysis("スペクトログラム生成", logHandler: logHandler) {
+                AudioFileService.makeSpectrogramSnapshot(from: signal)
+            }
             return try await AudioAnalysisArtifacts(
                 previewSnapshot: previewSnapshot,
                 metrics: metrics,
@@ -2225,6 +2251,65 @@ struct ContentView: View {
                 spectrogram: spectrogram
             )
         }.value
+    }
+
+    private func displayAnalysisLogHandler(for target: MetricTarget) -> (@Sendable (String) -> Void) {
+        switch target {
+        case .input, .corrected:
+            { message in
+                Task { @MainActor in
+                    job.appendLog(message)
+                }
+            }
+        case .mastered:
+            { message in
+                Task { @MainActor in
+                    job.appendMasteringLog(message)
+                }
+            }
+        }
+    }
+
+    static func measureDisplayAnalysis<T: Sendable>(
+        _ label: String,
+        logHandler: (@Sendable (String) -> Void)?,
+        work: @Sendable () async throws -> T
+    ) async throws -> T {
+        let start = DispatchTime.now().uptimeNanoseconds
+        do {
+            let result = try await work()
+            logHandler?("表示解析/計測: \(label): \(formatProcessingDuration(displayAnalysisDurationSeconds(since: start)))")
+            return result
+        } catch {
+            logHandler?("表示解析/計測: \(label): \(formatProcessingDuration(displayAnalysisDurationSeconds(since: start)))")
+            throw error
+        }
+    }
+
+    static func measureOptionalDisplayAnalysis<T: Sendable>(
+        _ label: String,
+        isEnabled: Bool,
+        logHandler: (@Sendable (String) -> Void)?,
+        work: @Sendable () async throws -> T
+    ) async throws -> T? {
+        guard isEnabled else { return nil }
+        return try await measureDisplayAnalysis(label, logHandler: logHandler, work: work)
+    }
+
+    private static func measureCorrectionAnalysis(
+        _ mode: AudioAnalysisMode?,
+        signal: AudioSignal,
+        logHandler: (@Sendable (String) -> Void)?
+    ) async throws -> AnalysisData? {
+        guard let mode else { return nil }
+        return try await measureDisplayAnalysis("補正解析", logHandler: logHandler) {
+            AudioAnalyzer(mode: mode).analyze(signal: signal)
+        }
+    }
+
+    private static func displayAnalysisDurationSeconds(since start: UInt64) -> Double {
+        let end = DispatchTime.now().uptimeNanoseconds
+        return Double(end - start) / 1_000_000_000
     }
 
     private func preparePreviewCards() {

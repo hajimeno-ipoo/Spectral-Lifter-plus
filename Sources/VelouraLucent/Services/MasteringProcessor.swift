@@ -131,49 +131,59 @@ struct MasteringProcessor {
                 maxPasses: noiseReturnDecision.action == .light ? 1 : 3
             )
         }
-        let mastered = preserveMasteringHighFloor(
-            signal: noiseGuarded,
-            reference: signal,
-            originalReference: originalReferenceSignal,
-            referenceNoiseMeasurements: referenceNoiseMeasurements,
-            originalReferenceNoiseMeasurements: originalReferenceNoiseMeasurements,
-            peakCeilingDB: settings.peakCeilingDB,
-            logger: logger
-        )
-        let finalGuarded = applyFinalNoiseReturnCeiling(
-            signal: mastered,
-            reference: signal,
-            referenceNoiseMeasurements: referenceNoiseMeasurements,
-            originalReferenceNoiseMeasurements: originalReferenceNoiseMeasurements,
-            peakCeilingDB: settings.peakCeilingDB,
-            logger: logger
-        )
-        let finalHighPreserved = preserveMasteringHighFloor(
-            signal: finalGuarded,
-            reference: signal,
-            originalReference: originalReferenceSignal,
-            referenceNoiseMeasurements: referenceNoiseMeasurements,
-            originalReferenceNoiseMeasurements: originalReferenceNoiseMeasurements,
-            peakCeilingDB: settings.peakCeilingDB,
-            logger: logger
-        )
-        let finalLoudnessRestored = restoreFinalLoudnessAfterGuards(
-            signal: finalHighPreserved,
-            reference: signal,
-            referenceNoiseMeasurements: referenceNoiseMeasurements,
-            originalReferenceNoiseMeasurements: originalReferenceNoiseMeasurements,
-            targetLKFS: effectiveTargetLoudness(settings.targetLoudness, dynamicsRetention: dynamicsRetention, finishingIntensity: finishingIntensity),
-            peakCeilingDB: settings.peakCeilingDB,
-            logger: logger
-        )
-        let finalNoiseConfirmed = applyFinalNoiseReturnCeiling(
-            signal: finalLoudnessRestored,
-            reference: signal,
-            referenceNoiseMeasurements: referenceNoiseMeasurements,
-            originalReferenceNoiseMeasurements: originalReferenceNoiseMeasurements,
-            peakCeilingDB: settings.peakCeilingDB,
-            logger: logger
-        )
+        let mastered = measure(label: "マスタリング/計測: 高域保持", logger: logger) {
+            preserveMasteringHighFloor(
+                signal: noiseGuarded,
+                reference: signal,
+                originalReference: originalReferenceSignal,
+                referenceNoiseMeasurements: referenceNoiseMeasurements,
+                originalReferenceNoiseMeasurements: originalReferenceNoiseMeasurements,
+                peakCeilingDB: settings.peakCeilingDB,
+                logger: logger
+            )
+        }
+        let finalGuarded = measure(label: "マスタリング/計測: 最終ノイズ上限", logger: logger) {
+            applyFinalNoiseReturnCeiling(
+                signal: mastered,
+                reference: signal,
+                referenceNoiseMeasurements: referenceNoiseMeasurements,
+                originalReferenceNoiseMeasurements: originalReferenceNoiseMeasurements,
+                peakCeilingDB: settings.peakCeilingDB,
+                logger: logger
+            )
+        }
+        let finalHighPreserved = measure(label: "マスタリング/計測: 最終高域保持", logger: logger) {
+            preserveMasteringHighFloor(
+                signal: finalGuarded,
+                reference: signal,
+                originalReference: originalReferenceSignal,
+                referenceNoiseMeasurements: referenceNoiseMeasurements,
+                originalReferenceNoiseMeasurements: originalReferenceNoiseMeasurements,
+                peakCeilingDB: settings.peakCeilingDB,
+                logger: logger
+            )
+        }
+        let finalLoudnessRestored = measure(label: "マスタリング/計測: 最終音量復帰", logger: logger) {
+            restoreFinalLoudnessAfterGuards(
+                signal: finalHighPreserved,
+                reference: signal,
+                referenceNoiseMeasurements: referenceNoiseMeasurements,
+                originalReferenceNoiseMeasurements: originalReferenceNoiseMeasurements,
+                targetLKFS: effectiveTargetLoudness(settings.targetLoudness, dynamicsRetention: dynamicsRetention, finishingIntensity: finishingIntensity),
+                peakCeilingDB: settings.peakCeilingDB,
+                logger: logger
+            )
+        }
+        let finalNoiseConfirmed = measure(label: "マスタリング/計測: 最終ノイズ確認", logger: logger) {
+            applyFinalNoiseReturnCeiling(
+                signal: finalLoudnessRestored,
+                reference: signal,
+                referenceNoiseMeasurements: referenceNoiseMeasurements,
+                originalReferenceNoiseMeasurements: originalReferenceNoiseMeasurements,
+                peakCeilingDB: settings.peakCeilingDB,
+                logger: logger
+            )
+        }
         logger?.log("ルート/マスタリング/実行工程数: \(routePlan.runLikeCount)/\(MasteringRouteStep.allCases.count)")
         logger?.log("ルート/マスタリング/スキップ工程数: \(MasteringRouteStep.allCases.count - routePlan.runLikeCount)/\(MasteringRouteStep.allCases.count)")
         return finalNoiseConfirmed
@@ -557,7 +567,7 @@ struct MasteringProcessor {
         let requiredIDs = [NoiseMeasurementID.hiss, NoiseMeasurementID.sibilance, NoiseMeasurementID.shimmer]
         let referenceMeasurements = requiredIDs.allSatisfy { referenceMeasurements?.comparableLevel(for: $0) != nil }
             ? referenceMeasurements!
-            : NoiseMeasurementService.analyze(signal: reference)
+            : NoiseMeasurementService.analyze(signal: reference, ids: requiredIDs)
         if reusedMeasurements {
             logger?.log("ノイズ測定: 既存結果を使用")
         }
@@ -667,7 +677,7 @@ struct MasteringProcessor {
         referenceMeasurements: NoiseMeasurementSnapshot,
         rules: [NoiseReturnLimit]
     ) -> (rule: NoiseReturnLimit, gain: Float)? {
-        let currentMeasurements = NoiseMeasurementService.analyze(signal: signal)
+        let currentMeasurements = NoiseMeasurementService.analyze(signal: signal, ids: rules.map(\.id))
         guard let strongestExcess = rules
             .compactMap({ rule -> (rule: NoiseReturnLimit, excessDB: Double)? in
                 guard let reference = referenceMeasurements.comparableLevel(for: rule.id),
@@ -946,9 +956,12 @@ struct MasteringProcessor {
         peakCeilingDB: Float,
         logger: AudioProcessingLogger?
     ) -> AudioSignal {
-        let referenceNoise = referenceNoiseMeasurements ?? NoiseMeasurementService.analyze(signal: reference)
+        let requiredIDs = [NoiseMeasurementID.hiss, NoiseMeasurementID.sibilance]
+        let referenceNoise = requiredIDs.allSatisfy { referenceNoiseMeasurements?.comparableLevel(for: $0) != nil }
+            ? referenceNoiseMeasurements!
+            : NoiseMeasurementService.analyze(signal: reference, ids: requiredIDs)
         let originalNoise = originalReferenceNoiseMeasurements
-        let fallbackNoise = NoiseMeasurementService.analyze(signal: fallback)
+        let fallbackNoise = NoiseMeasurementService.analyze(signal: fallback, ids: requiredIDs)
         let fallbackOriginalHissReturn = originalNoise.map {
             noiseReturn(id: NoiseMeasurementID.hiss, reference: $0, current: fallbackNoise)
         } ?? 0
@@ -965,7 +978,7 @@ struct MasteringProcessor {
         ]
 
         for candidate in candidates {
-            let candidateNoise = NoiseMeasurementService.analyze(signal: candidate.signal)
+            let candidateNoise = NoiseMeasurementService.analyze(signal: candidate.signal, ids: requiredIDs)
             let hissReturn = noiseReturn(id: NoiseMeasurementID.hiss, reference: referenceNoise, current: candidateNoise)
             let sibilanceReturn = noiseReturn(id: NoiseMeasurementID.sibilance, reference: referenceNoise, current: candidateNoise)
             let originalHissReturn = originalNoise.map { noiseReturn(id: NoiseMeasurementID.hiss, reference: $0, current: candidateNoise) } ?? 0
@@ -1020,7 +1033,10 @@ struct MasteringProcessor {
         logger: AudioProcessingLogger?
     ) -> AudioSignal {
         var current = signal
-        let referenceNoise = referenceNoiseMeasurements ?? NoiseMeasurementService.analyze(signal: reference)
+        let requiredIDs = [NoiseMeasurementID.hiss, NoiseMeasurementID.sibilance]
+        let referenceNoise = requiredIDs.allSatisfy { referenceNoiseMeasurements?.comparableLevel(for: $0) != nil }
+            ? referenceNoiseMeasurements!
+            : NoiseMeasurementService.analyze(signal: reference, ids: requiredIDs)
         let originalNoise = originalReferenceNoiseMeasurements
         let referenceSibilance = referenceNoise.comparableLevel(for: NoiseMeasurementID.sibilance)
         let targetSibilance = min(
@@ -1030,7 +1046,7 @@ struct MasteringProcessor {
 
         let maxPasses = 5
         for pass in 1...maxPasses {
-            let currentNoise = NoiseMeasurementService.analyze(signal: current)
+            let currentNoise = NoiseMeasurementService.analyze(signal: current, ids: requiredIDs)
             let hissReturn = noiseReturn(id: NoiseMeasurementID.hiss, reference: referenceNoise, current: currentNoise)
             let originalHissReturn = originalNoise.map { noiseReturn(id: NoiseMeasurementID.hiss, reference: $0, current: currentNoise) } ?? Double.greatestFiniteMagnitude
             let currentSibilance = currentNoise.comparableLevel(for: NoiseMeasurementID.sibilance)

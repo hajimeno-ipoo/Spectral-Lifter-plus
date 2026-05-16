@@ -76,6 +76,28 @@ struct NoiseMeasurementServiceTests {
         #expect(louderHiss > baseHiss + 5.0)
     }
 
+    @Test
+    func partialMeasurementMatchesFullMeasurementForRequestedIDs() throws {
+        let signal = testSignal { time in
+            let tone = sin(2 * Double.pi * 440 * time) * 0.08
+            let hiss = sin(2 * Double.pi * 12_000 * time) * 0.006
+            let rumble = sin(2 * Double.pi * 80 * time) * 0.02
+            return Float(tone + hiss + rumble)
+        }
+
+        let ids = [NoiseMeasurementID.hiss, NoiseMeasurementID.mud, NoiseMeasurementID.rumble]
+        let full = NoiseMeasurementService.analyze(signal: signal)
+        let partial = NoiseMeasurementService.analyze(signal: signal, ids: ids)
+
+        #expect(partial.values.map(\.id) == ids)
+        #expect(partial.value(for: NoiseMeasurementID.sibilance) == nil)
+        for id in ids {
+            let fullValue = try #require(full.comparableLevel(for: id))
+            let partialValue = try #require(partial.comparableLevel(for: id))
+            #expect(abs(fullValue - partialValue) < 0.0001)
+        }
+    }
+
     private func value(_ id: String, in snapshot: NoiseMeasurementSnapshot) -> Double {
         snapshot.value(for: id)?.comparableLevelDB ?? -120
     }

@@ -119,6 +119,10 @@ private func masteringAnalysisStageDisplayName(_ name: String) -> String {
         "ラウドネス"
     case "truePeak":
         "トゥルーピーク"
+    case "spectralSummaryCPU":
+        "帯域集計(CPU)"
+    case "spectralSummaryMetal":
+        "帯域集計(Metal)"
     case "spectralSummary":
         "帯域集計"
     case "stereoWidth":

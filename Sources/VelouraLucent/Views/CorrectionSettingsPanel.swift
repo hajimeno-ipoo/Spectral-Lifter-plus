@@ -38,13 +38,7 @@ struct CorrectionSettingsPanel: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            DisclosureGroup(isExpanded: $job.showAdvancedCorrectionSettings) {
-                advancedCorrectionSettings
-                    .padding(.top, 8)
-            } label: {
-                Text("詳細設定")
-                    .font(.subheadline.weight(.semibold))
-            }
+            advancedCorrectionSettings
         }
     }
 

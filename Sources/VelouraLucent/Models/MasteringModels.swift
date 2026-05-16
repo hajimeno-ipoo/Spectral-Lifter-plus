@@ -112,6 +112,19 @@ struct MasteringSettings: Sendable, Equatable {
     var finishingIntensity: Float
 }
 
+extension MasteringSettings {
+    var aggressiveSettingWarnings: [String] {
+        var warnings: [String] = []
+        if targetLoudness >= -12 {
+            warnings.append("かなり大きい仕上げです。音が平坦に聞こえやすくなります。")
+        }
+        if peakCeilingDB >= -0.7 {
+            warnings.append("歪みやすい設定です。配信や再生環境によって音割れする可能性があります。")
+        }
+        return warnings
+    }
+}
+
 struct MultibandCompressionSettings: Sendable, Equatable {
     var low: BandCompressorSettings
     var mid: BandCompressorSettings

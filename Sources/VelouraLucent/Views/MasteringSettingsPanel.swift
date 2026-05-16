@@ -23,6 +23,7 @@ struct MasteringSettingsPanel: View {
                         }
                     }
                     .pickerStyle(.segmented)
+                    .disabled(job.isMastering)
                 }
 
                 VStack(alignment: .leading, spacing: 6) {
@@ -37,13 +38,8 @@ struct MasteringSettingsPanel: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            DisclosureGroup(isExpanded: $job.showAdvancedMasteringSettings) {
-                advancedMasteringSettings
-                    .padding(.top, 8)
-            } label: {
-                Text("詳細設定")
-                    .font(.subheadline.weight(.semibold))
-            }
+            advancedMasteringSettings
+                .disabled(job.isMastering)
         }
     }
 
@@ -59,6 +55,8 @@ struct MasteringSettingsPanel: View {
                 }
                 .disabled(!job.isUsingCustomMasteringSettings)
             }
+
+            aggressiveSettingWarnings
 
             settingsSection(title: "基本", summary: "音量、安全性、開放感、押し出し感をまとめて調整します。") {
                 LazyVGrid(columns: advancedSettingColumns, spacing: 12) {
@@ -89,6 +87,23 @@ struct MasteringSettingsPanel: View {
                     saturationControl
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private var aggressiveSettingWarnings: some View {
+        let warnings = job.editableMasteringSettings.aggressiveSettingWarnings
+        if !warnings.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(warnings, id: \.self) { warning in
+                    Label(warning, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
         }
     }
 

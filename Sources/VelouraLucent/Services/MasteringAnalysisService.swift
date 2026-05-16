@@ -9,6 +9,25 @@ struct MasteringSpectralSummary: Sendable, Equatable {
 }
 
 enum MasteringAnalysisService {
+    enum SpectralSummaryBackend: Sendable, Equatable {
+        case cpu
+        case metal
+
+        var stageName: String {
+            switch self {
+            case .cpu:
+                "spectralSummaryCPU"
+            case .metal:
+                "spectralSummaryMetal"
+            }
+        }
+    }
+
+    private struct SpectralSummaryResult: Sendable, Equatable {
+        let summary: MasteringSpectralSummary
+        let backend: SpectralSummaryBackend
+    }
+
     struct Benchmark: Sendable {
         let analysis: MasteringAnalysis
         let stages: [AudioProcessingStageBenchmark]
@@ -61,7 +80,7 @@ enum MasteringAnalysisService {
         let peak = recorder.measure("truePeak") {
             loudnessMeasurement.truePeakDBFS
         }
-        let spectralSummaryResult = recorder.measure("spectralSummary") {
+        let spectralSummaryResult = recorder.measureSpectralSummary {
             spectralSummary(for: spectrogram, sampleRate: signal.sampleRate)
         }
         let width = recorder.measure("stereoWidth") {
@@ -71,10 +90,10 @@ enum MasteringAnalysisService {
         let analysis = MasteringAnalysis(
             integratedLoudness: Float(loudnessMeasurement.integratedLoudnessLUFS),
             truePeakDBFS: peak,
-            lowBandLevelDB: spectralSummaryResult.lowBandLevelDB,
-            midBandLevelDB: spectralSummaryResult.midBandLevelDB,
-            highBandLevelDB: spectralSummaryResult.highBandLevelDB,
-            harshnessScore: spectralSummaryResult.harshnessScore,
+            lowBandLevelDB: spectralSummaryResult.summary.lowBandLevelDB,
+            midBandLevelDB: spectralSummaryResult.summary.midBandLevelDB,
+            highBandLevelDB: spectralSummaryResult.summary.highBandLevelDB,
+            harshnessScore: spectralSummaryResult.summary.harshnessScore,
             stereoWidth: width
         )
         return Benchmark(analysis: analysis, stages: recorder.stages)
@@ -97,7 +116,14 @@ enum MasteringAnalysisService {
         }
     }
 
-    private static func spectralSummary(for spectrogram: Spectrogram, sampleRate: Double) -> MasteringSpectralSummary {
+    private static func spectralSummary(for spectrogram: Spectrogram, sampleRate: Double) -> SpectralSummaryResult {
+        if let metalSummary = MetalAudioAnalysisProcessor().masteringSpectralSummary(spectrogram: spectrogram, sampleRate: sampleRate) {
+            return SpectralSummaryResult(summary: metalSummary, backend: .metal)
+        }
+        return SpectralSummaryResult(summary: cpuSpectralSummary(for: spectrogram, sampleRate: sampleRate), backend: .cpu)
+    }
+
+    private static func cpuSpectralSummary(for spectrogram: Spectrogram, sampleRate: Double) -> MasteringSpectralSummary {
         guard spectrogram.frameCount > 0 else {
             return MasteringSpectralSummary(lowBandLevelDB: -120, midBandLevelDB: -120, highBandLevelDB: -120, harshnessScore: 0)
         }
@@ -211,6 +237,19 @@ enum MasteringAnalysisService {
             stages.append(
                 AudioProcessingStageBenchmark(
                     name: stageName,
+                    durationSeconds: Double(end - start) / 1_000_000_000
+                )
+            )
+            return result
+        }
+
+        mutating func measureSpectralSummary(_ work: () -> SpectralSummaryResult) -> SpectralSummaryResult {
+            let start = DispatchTime.now().uptimeNanoseconds
+            let result = work()
+            let end = DispatchTime.now().uptimeNanoseconds
+            stages.append(
+                AudioProcessingStageBenchmark(
+                    name: result.backend.stageName,
                     durationSeconds: Double(end - start) / 1_000_000_000
                 )
             )

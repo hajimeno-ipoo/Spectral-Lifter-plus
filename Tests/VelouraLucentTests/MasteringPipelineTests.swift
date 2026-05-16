@@ -23,7 +23,7 @@ struct MasteringPipelineTests {
         #expect(logs.values.contains { $0.hasPrefix("解析/STFT: ") && $0.hasSuffix("秒") })
         #expect(logs.values.contains { $0.hasPrefix("解析/ラウドネス: ") && $0.hasSuffix("秒") })
         #expect(logs.values.contains { $0.hasPrefix("解析/トゥルーピーク: ") && $0.hasSuffix("秒") })
-        #expect(logs.values.contains { $0.hasPrefix("解析/帯域集計: ") && $0.hasSuffix("秒") })
+        #expect(logs.values.contains { $0.hasPrefix("解析/帯域集計") && $0.hasSuffix("秒") })
         #expect(logs.values.contains { $0.hasPrefix("解析/ステレオ幅: ") && $0.hasSuffix("秒") })
         #expect(logs.values.contains { $0.hasPrefix("解析: ") && $0.hasSuffix("秒") })
         #expect(logs.values.contains { $0.hasPrefix("合計: ") && $0.hasSuffix("秒") })
@@ -34,8 +34,13 @@ struct MasteringPipelineTests {
         #expect(logs.values.contains("ノイズ戻り: 一括判定を開始"))
         #expect(logs.values.contains { $0.hasPrefix("ノイズ戻り/軽量判定: ") })
         #expect(logs.values.contains("ノイズ戻り: 完了") || logs.values.contains("ノイズ戻り: 安全上限に到達"))
+        #expect(logs.values.contains { $0.hasPrefix("マスタリング/計測: 高域保持: ") && $0.hasSuffix("秒") })
+        #expect(logs.values.contains { $0.hasPrefix("マスタリング/計測: 最終ノイズ上限: ") && $0.hasSuffix("秒") })
+        #expect(logs.values.contains { $0.hasPrefix("マスタリング/計測: 最終高域保持: ") && $0.hasSuffix("秒") })
+        #expect(logs.values.contains { $0.hasPrefix("マスタリング/計測: 最終音量復帰: ") && $0.hasSuffix("秒") })
+        #expect(logs.values.contains { $0.hasPrefix("マスタリング/計測: 最終ノイズ確認: ") && $0.hasSuffix("秒") })
         let total = try #require(parsedDuration(prefix: "合計: ", from: logs.values))
-        let stagePrefixes = ["解析: ", "音色: ", "ディエッサー: ", "ダイナミクス: ", "倍音: ", "空気感: ", "広がり: ", "ラウドネス: ", "ノイズ戻りガード: ", "保存: "]
+        let stagePrefixes = ["解析: ", "音色: ", "ディエッサー: ", "ダイナミクス: ", "倍音: ", "空気感: ", "広がり: ", "ラウドネス: ", "ノイズ戻りガード: ", "マスタリング/計測: 高域保持: ", "マスタリング/計測: 最終ノイズ上限: ", "マスタリング/計測: 最終高域保持: ", "マスタリング/計測: 最終音量復帰: ", "マスタリング/計測: 最終ノイズ確認: ", "保存: "]
         var summedStages = 0.0
         for prefix in stagePrefixes {
             summedStages += try #require(parsedDuration(prefix: prefix, from: logs.values))

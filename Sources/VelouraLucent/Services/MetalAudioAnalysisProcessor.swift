@@ -38,47 +38,36 @@ struct MetalAudioAnalysisProcessor: Sendable {
         let harshUpperMidRange = metalBinRange(3_000...8_000, frequencyStep: frequencyStep, binCount: spectrogram.binCount)
         let harshAirRange = metalBinRange(12_000...(sampleRate * 0.5), frequencyStep: frequencyStep, binCount: spectrogram.binCount)
 
-        guard let magnitudes = makeMagnitudes(spectrogram: spectrogram) else {
+        guard let frameSums = makeMasteringSpectralFrameSums(
+            spectrogram: spectrogram,
+            lowRange: lowRange,
+            midRange: midRange,
+            highRange: highRange,
+            harshUpperMidRange: harshUpperMidRange,
+            harshAirRange: harshAirRange
+        ) else {
             return nil
         }
 
         var lowEnergy: Float = 0
         var midEnergy: Float = 0
         var highEnergy: Float = 0
-        var lowCount = 0
-        var midCount = 0
-        var highCount = 0
+        var harshUpperMid: Float = 0
+        var harshAir: Float = 0
         for frameIndex in 0..<spectrogram.frameCount {
-            let frameStart = frameIndex * spectrogram.binCount
-            for binIndex in 0..<spectrogram.binCount {
-                let magnitude = magnitudes[frameStart + binIndex]
-                let energy = magnitude * magnitude
-
-                if lowRange.contains(UInt32(binIndex)) {
-                    lowEnergy += energy
-                    lowCount += 1
-                }
-                if midRange.contains(UInt32(binIndex)) {
-                    midEnergy += energy
-                    midCount += 1
-                }
-                if highRange.contains(UInt32(binIndex)) {
-                    highEnergy += energy
-                    highCount += 1
-                }
-            }
+            let outputStart = frameIndex * 5
+            lowEnergy += frameSums[outputStart]
+            midEnergy += frameSums[outputStart + 1]
+            highEnergy += frameSums[outputStart + 2]
+            harshUpperMid += frameSums[outputStart + 3]
+            harshAir += frameSums[outputStart + 4]
         }
-        let harshness = cpuHarshnessScore(
-            spectrogram: spectrogram,
-            harshUpperMidRange: harshUpperMidRange,
-            harshAirRange: harshAirRange
-        )
 
         return MasteringSpectralSummary(
-            lowBandLevelDB: masteringBandLevelDB(energy: lowEnergy, count: lowCount),
-            midBandLevelDB: masteringBandLevelDB(energy: midEnergy, count: midCount),
-            highBandLevelDB: masteringBandLevelDB(energy: highEnergy, count: highCount),
-            harshnessScore: harshness
+            lowBandLevelDB: masteringBandLevelDB(energy: lowEnergy, count: Int(lowRange.count) * spectrogram.frameCount),
+            midBandLevelDB: masteringBandLevelDB(energy: midEnergy, count: Int(midRange.count) * spectrogram.frameCount),
+            highBandLevelDB: masteringBandLevelDB(energy: highEnergy, count: Int(highRange.count) * spectrogram.frameCount),
+            harshnessScore: min(1.0, harshUpperMid / max(harshUpperMid + harshAir, 1e-6))
         )
         #else
         return nil
@@ -271,31 +260,6 @@ extension MetalAudioAnalysisProcessor {
     private func masteringBandLevelDB(energy: Float, count: Int) -> Double {
         let rms = sqrt(max(energy / Float(max(count, 1)), 1e-12))
         return 20 * log10(max(Double(rms), 1e-12))
-    }
-
-    private func cpuHarshnessScore(
-        spectrogram: Spectrogram,
-        harshUpperMidRange: MetalBinRange,
-        harshAirRange: MetalBinRange
-    ) -> Float {
-        var harshUpperMid: Float = 0
-        var harshAir: Float = 0
-        for frameIndex in 0..<spectrogram.frameCount {
-            let frameStart = frameIndex * spectrogram.binCount
-            var frameHarshUpperMid: Float = 0
-            var frameHarshAir: Float = 0
-            for binIndex in Int(harshUpperMidRange.lower)...Int(harshUpperMidRange.upper) {
-                let storageIndex = frameStart + binIndex
-                frameHarshUpperMid += hypotf(spectrogram.real[storageIndex], spectrogram.imag[storageIndex])
-            }
-            for binIndex in Int(harshAirRange.lower)...Int(harshAirRange.upper) {
-                let storageIndex = frameStart + binIndex
-                frameHarshAir += hypotf(spectrogram.real[storageIndex], spectrogram.imag[storageIndex])
-            }
-            harshUpperMid += frameHarshUpperMid
-            harshAir += frameHarshAir
-        }
-        return min(1.0, harshUpperMid / max(harshUpperMid + harshAir, 1e-6))
     }
 
     static var metalSource: String {

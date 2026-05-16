@@ -344,11 +344,13 @@ struct NativeAudioProcessor {
                 logger: logger
             )
         }
-        let mudControlled = constrainCorrectionMudIncrease(
-            signal: highPreserved,
-            referenceMeasurements: routeNoiseMeasurements,
-            logger: logger
-        )
+        let mudControlled = measure("correctionMudGuard", label: "補正/計測: 低中域残り確認", recorder: benchmarkRecorder, logger: logger) {
+            constrainCorrectionMudIncrease(
+                signal: highPreserved,
+                referenceMeasurements: routeNoiseMeasurements,
+                logger: logger
+            )
+        }
 
         logger?.start(.peakSafety)
         logger?.log("ピークを保護します")
@@ -410,7 +412,10 @@ struct NativeAudioProcessor {
     }
 
     private func repairIncreasedHighNoise(_ signal: AudioSignal, referenceMeasurements: NoiseMeasurementSnapshot) -> Bool {
-        let repairedMeasurements = NoiseMeasurementService.analyze(signal: signal)
+        let repairedMeasurements = NoiseMeasurementService.analyze(
+            signal: signal,
+            ids: [NoiseMeasurementID.hiss, NoiseMeasurementID.shimmer, NoiseMeasurementID.sibilance]
+        )
         let hissDelta = noiseDelta(id: NoiseMeasurementID.hiss, reference: referenceMeasurements, current: repairedMeasurements)
         let shimmerDelta = noiseDelta(id: NoiseMeasurementID.shimmer, reference: referenceMeasurements, current: repairedMeasurements)
         let sibilanceDelta = noiseDelta(id: NoiseMeasurementID.sibilance, reference: referenceMeasurements, current: repairedMeasurements)
@@ -490,7 +495,10 @@ struct NativeAudioProcessor {
         ]
 
         for candidate in candidates {
-            let measurements = NoiseMeasurementService.analyze(signal: candidate.signal)
+            let measurements = NoiseMeasurementService.analyze(
+                signal: candidate.signal,
+                ids: [NoiseMeasurementID.hiss, NoiseMeasurementID.shimmer, NoiseMeasurementID.sibilance]
+            )
             let hissReturn = noiseDelta(id: NoiseMeasurementID.hiss, reference: referenceMeasurements, current: measurements)
             let shimmerReturn = noiseDelta(id: NoiseMeasurementID.shimmer, reference: referenceMeasurements, current: measurements)
             let sibilanceReturn = noiseDelta(id: NoiseMeasurementID.sibilance, reference: referenceMeasurements, current: measurements)
@@ -510,7 +518,7 @@ struct NativeAudioProcessor {
         referenceMeasurements: NoiseMeasurementSnapshot,
         logger: AudioProcessingLogger?
     ) -> AudioSignal {
-        let currentMeasurements = NoiseMeasurementService.analyze(signal: signal)
+        let currentMeasurements = NoiseMeasurementService.analyze(signal: signal, ids: [NoiseMeasurementID.mud])
         guard let referenceMud = referenceMeasurements.comparableLevel(for: NoiseMeasurementID.mud),
               let currentMud = currentMeasurements.comparableLevel(for: NoiseMeasurementID.mud)
         else {
@@ -525,7 +533,7 @@ struct NativeAudioProcessor {
         let candidates = [targetGainDB, targetGainDB * 0.75, targetGainDB * 0.50, targetGainDB * 0.25]
         for gainDB in candidates {
             let candidate = scaleCorrectionSignalBand(signal: signal, lower: 300, upper: 1_000, gainDB: gainDB)
-            let candidateMud = NoiseMeasurementService.analyze(signal: candidate).comparableLevel(for: NoiseMeasurementID.mud) ?? currentMud
+            let candidateMud = NoiseMeasurementService.analyze(signal: candidate, ids: [NoiseMeasurementID.mud]).comparableLevel(for: NoiseMeasurementID.mud) ?? currentMud
             if candidateMud <= referenceMud + allowedIncreaseDB {
                 logger?.log("低中域残り: こもり悪化を抑制 \(String(format: "%.1f", gainDB)) dB")
                 return candidate
@@ -783,7 +791,7 @@ private struct RumbleReducer: Sendable {
         }
 
         let measurements = referenceMeasurements?.comparableLevel(for: NoiseMeasurementID.rumble) == nil
-            ? NoiseMeasurementService.analyze(signal: reference)
+            ? NoiseMeasurementService.analyze(signal: reference, ids: [NoiseMeasurementID.rumble])
             : referenceMeasurements!
         guard let referenceRumble = measurements.comparableLevel(for: NoiseMeasurementID.rumble) else {
             logger?.log("低域ノイズ/測定回数: 0")
@@ -794,7 +802,7 @@ private struct RumbleReducer: Sendable {
         var measurementCount = 0
         for _ in 0..<4 {
             measurementCount += 1
-            guard let current = NoiseMeasurementService.analyze(signal: currentSignal).comparableLevel(for: NoiseMeasurementID.rumble) else {
+            guard let current = NoiseMeasurementService.analyze(signal: currentSignal, ids: [NoiseMeasurementID.rumble]).comparableLevel(for: NoiseMeasurementID.rumble) else {
                 logger?.log("低域ノイズ/測定回数: \(measurementCount)")
                 return currentSignal
             }
@@ -1727,7 +1735,7 @@ private struct ShimmerPeakLimiter: Sendable {
         let requiredIDs = [NoiseMeasurementID.shimmer, NoiseMeasurementID.hiss]
         let referenceMeasurements = requiredIDs.allSatisfy { referenceMeasurements?.comparableLevel(for: $0) != nil }
             ? referenceMeasurements!
-            : NoiseMeasurementService.analyze(signal: reference)
+            : NoiseMeasurementService.analyze(signal: reference, ids: requiredIDs)
         let baseLimited: AudioSignal
         if attenuationDB >= 8 {
             let channels = mapChannelsConcurrently(signal.channels) {
@@ -1844,7 +1852,7 @@ private struct ShimmerPeakLimiter: Sendable {
         referenceMeasurements: NoiseMeasurementSnapshot,
         rules: [ShimmerLimitRule]
     ) -> (rule: ShimmerLimitRule, gain: Float)? {
-        let currentMeasurements = NoiseMeasurementService.analyze(signal: signal)
+        let currentMeasurements = NoiseMeasurementService.analyze(signal: signal, ids: rules.map(\.id))
         guard let strongestExcess = rules
             .compactMap({ rule -> (rule: ShimmerLimitRule, excessDB: Double)? in
                 guard let reference = referenceMeasurements.comparableLevel(for: rule.id),

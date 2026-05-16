@@ -2,9 +2,19 @@ import Foundation
 
 enum NoiseMeasurementService {
     static func analyze(signal: AudioSignal) -> NoiseMeasurementSnapshot {
+        analyze(signal: signal, definitions: definitions)
+    }
+
+    static func analyze(signal: AudioSignal, ids requestedIDs: [String]) -> NoiseMeasurementSnapshot {
+        let requestedIDSet = Set(requestedIDs)
+        let selectedDefinitions = definitions.filter { requestedIDSet.contains($0.id) }
+        return analyze(signal: signal, definitions: selectedDefinitions)
+    }
+
+    private static func analyze(signal: AudioSignal, definitions selectedDefinitions: [NoiseMeasurementDefinition]) -> NoiseMeasurementSnapshot {
         let mono = signal.monoMixdown()
         guard !mono.isEmpty else {
-            return NoiseMeasurementSnapshot(values: definitions.map {
+            return NoiseMeasurementSnapshot(values: selectedDefinitions.map {
                 NoiseMeasurementValue(
                     id: $0.id,
                     label: $0.label,
@@ -17,9 +27,10 @@ enum NoiseMeasurementService {
             })
         }
 
-        let measuredLevels = measure(mono: mono, sampleRate: signal.sampleRate)
+        let requestedIDs = Set(selectedDefinitions.map(\.id))
+        let measuredLevels = measure(mono: mono, sampleRate: signal.sampleRate, ids: requestedIDs)
 
-        let values = definitions.map { definition in
+        let values = selectedDefinitions.map { definition in
             let measured = measuredLevels[definition.id] ?? -120
             return NoiseMeasurementValue(
                 id: definition.id,
@@ -46,24 +57,45 @@ enum NoiseMeasurementService {
         ]
     }
 
-    private static func measure(mono: [Float], sampleRate: Double) -> [String: Double] {
-        let fullRMS = rmsDB(mono)
-        let high = bandPass(mono, lower: 8_000, upper: min(20_000, sampleRate * 0.5 - 100), sampleRate: sampleRate)
-        let sibilance = bandPass(mono, lower: 5_000, upper: min(9_000, sampleRate * 0.5 - 100), sampleRate: sampleRate)
-        let shimmer = bandPass(mono, lower: 10_000, upper: min(16_000, sampleRate * 0.5 - 100), sampleRate: sampleRate)
-        let lowMid = bandPass(mono, lower: 300, upper: 1_000, sampleRate: sampleRate)
-        let low = bandPass(mono, lower: 20, upper: 150, sampleRate: sampleRate)
-        let room = bandPass(mono, lower: 100, upper: min(8_000, sampleRate * 0.5 - 100), sampleRate: sampleRate)
+    private static func measure(mono: [Float], sampleRate: Double, ids requestedIDs: Set<String>) -> [String: Double] {
+        var measured: [String: Double] = [:]
 
-        return [
-            NoiseMeasurementID.hiss: quietBandNoiseFloorDB(band: high, reference: mono, sampleRate: sampleRate),
-            NoiseMeasurementID.sibilance: transientExcessDB(band: sibilance, sampleRate: sampleRate),
-            NoiseMeasurementID.shimmer: quietBandNoiseFloorDB(band: shimmer, reference: mono, sampleRate: sampleRate),
-            NoiseMeasurementID.mud: sustainedBandRatioDB(band: lowMid, fullRMSDB: fullRMS),
-            NoiseMeasurementID.hum: humProminenceDB(mono: mono, sampleRate: sampleRate),
-            NoiseMeasurementID.rumble: quietBandNoiseFloorDB(band: low, reference: mono, sampleRate: sampleRate),
-            NoiseMeasurementID.room: quietBandNoiseFloorDB(band: room, reference: mono, sampleRate: sampleRate)
-        ]
+        if requestedIDs.contains(NoiseMeasurementID.hiss) {
+            let high = bandPass(mono, lower: 8_000, upper: min(20_000, sampleRate * 0.5 - 100), sampleRate: sampleRate)
+            measured[NoiseMeasurementID.hiss] = quietBandNoiseFloorDB(band: high, reference: mono, sampleRate: sampleRate)
+        }
+
+        if requestedIDs.contains(NoiseMeasurementID.sibilance) {
+            let sibilance = bandPass(mono, lower: 5_000, upper: min(9_000, sampleRate * 0.5 - 100), sampleRate: sampleRate)
+            measured[NoiseMeasurementID.sibilance] = transientExcessDB(band: sibilance, sampleRate: sampleRate)
+        }
+
+        if requestedIDs.contains(NoiseMeasurementID.shimmer) {
+            let shimmer = bandPass(mono, lower: 10_000, upper: min(16_000, sampleRate * 0.5 - 100), sampleRate: sampleRate)
+            measured[NoiseMeasurementID.shimmer] = quietBandNoiseFloorDB(band: shimmer, reference: mono, sampleRate: sampleRate)
+        }
+
+        if requestedIDs.contains(NoiseMeasurementID.mud) {
+            let fullRMS = rmsDB(mono)
+            let lowMid = bandPass(mono, lower: 300, upper: 1_000, sampleRate: sampleRate)
+            measured[NoiseMeasurementID.mud] = sustainedBandRatioDB(band: lowMid, fullRMSDB: fullRMS)
+        }
+
+        if requestedIDs.contains(NoiseMeasurementID.hum) {
+            measured[NoiseMeasurementID.hum] = humProminenceDB(mono: mono, sampleRate: sampleRate)
+        }
+
+        if requestedIDs.contains(NoiseMeasurementID.rumble) {
+            let low = bandPass(mono, lower: 20, upper: 150, sampleRate: sampleRate)
+            measured[NoiseMeasurementID.rumble] = quietBandNoiseFloorDB(band: low, reference: mono, sampleRate: sampleRate)
+        }
+
+        if requestedIDs.contains(NoiseMeasurementID.room) {
+            let room = bandPass(mono, lower: 100, upper: min(8_000, sampleRate * 0.5 - 100), sampleRate: sampleRate)
+            measured[NoiseMeasurementID.room] = quietBandNoiseFloorDB(band: room, reference: mono, sampleRate: sampleRate)
+        }
+
+        return measured
     }
 
     private static func bandPass(_ samples: [Float], lower: Double, upper: Double, sampleRate: Double) -> [Float] {
