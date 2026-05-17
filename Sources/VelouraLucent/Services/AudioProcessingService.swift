@@ -8,6 +8,7 @@ struct AudioProcessingService {
         analysisMode: AudioAnalysisMode = .auto,
         initialAnalysis: AnalysisData? = nil,
         initialNoiseMeasurements: NoiseMeasurementSnapshot? = nil,
+        diagnosticOutputDirectory: URL? = nil,
         logHandler: @escaping @Sendable (String) -> Void
     ) async throws -> URL {
         let outputURL = Self.temporaryOutputURL(for: inputFile)
@@ -23,6 +24,7 @@ struct AudioProcessingService {
                 analysisMode: analysisMode,
                 initialAnalysis: initialAnalysis,
                 initialNoiseMeasurements: initialNoiseMeasurements,
+                diagnosticOutputDirectory: diagnosticOutputDirectory,
                 logger: logger
             )
         }.value

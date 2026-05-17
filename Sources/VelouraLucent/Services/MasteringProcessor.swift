@@ -8,6 +8,7 @@ struct MasteringProcessor {
         referenceNoiseMeasurements: NoiseMeasurementSnapshot? = nil,
         originalReferenceSignal: AudioSignal? = nil,
         originalReferenceNoiseMeasurements: NoiseMeasurementSnapshot? = nil,
+        diagnosticOutputDirectory: URL? = nil,
         logger: AudioProcessingLogger? = nil
     ) -> AudioSignal {
         let dynamicsRetention = clamped(settings.dynamicsRetention, min: 0, max: 1)
@@ -18,12 +19,14 @@ struct MasteringProcessor {
             noiseMeasurements: referenceNoiseMeasurements
         )
         logMasteringRoutePlan(routePlan, logger: logger)
+        saveDiagnostic(signal, to: diagnosticOutputDirectory, order: 0, id: "input", label: "補正済み入力", logger: logger)
 
         logger?.start(.tone)
         logger?.log(MasteringStep.tone.rawValue)
         var current = measure(label: "音色", logger: logger, progressStep: .tone) {
             applyTone(signal: signal, analysis: analysis, settings: settings, finishingIntensity: finishingIntensity)
         }
+        saveDiagnostic(current, to: diagnosticOutputDirectory, order: 1, id: "tone", label: "音色調整後", logger: logger)
 
         let deEssDecision = routePlan.decision(for: .deEss)
         if deEssDecision.action == .skip {
@@ -36,6 +39,7 @@ struct MasteringProcessor {
                 applyDeEsser(signal: current, analysis: analysis, settings: settings)
             }
         }
+        saveDiagnostic(current, to: diagnosticOutputDirectory, order: 2, id: "deEss", label: "ディエッサー後", logger: logger)
 
         logger?.start(.dynamics)
         logger?.log(MasteringStep.dynamics.rawValue)
@@ -48,6 +52,7 @@ struct MasteringProcessor {
                 finishingIntensity: finishingIntensity
             )
         }
+        saveDiagnostic(current, to: diagnosticOutputDirectory, order: 3, id: "dynamics", label: "ダイナミクス後", logger: logger)
 
         let saturateDecision = routePlan.decision(for: .saturate)
         if saturateDecision.action == .skip {
@@ -60,6 +65,7 @@ struct MasteringProcessor {
                 applySaturation(signal: current, amount: effectiveSaturation(settings.saturationAmount, dynamicsRetention: dynamicsRetention, finishingIntensity: finishingIntensity))
             }
         }
+        saveDiagnostic(current, to: diagnosticOutputDirectory, order: 4, id: "saturate", label: "倍音調整後", logger: logger)
 
         let airDecision = routePlan.decision(for: .air)
         if airDecision.action == .skip {
@@ -77,6 +83,7 @@ struct MasteringProcessor {
                 )
             }
         }
+        saveDiagnostic(current, to: diagnosticOutputDirectory, order: 5, id: "air", label: "空気感調整後", logger: logger)
 
         let stereoDecision = routePlan.decision(for: .stereo)
         if stereoDecision.action == .skip {
@@ -89,6 +96,7 @@ struct MasteringProcessor {
                 applyStereoWidth(signal: current, targetWidth: settings.stereoWidth)
             }
         }
+        saveDiagnostic(current, to: diagnosticOutputDirectory, order: 6, id: "stereo", label: "ステレオ調整後", logger: logger)
 
         logger?.start(.loudness)
         logger?.log(MasteringStep.loudness.rawValue)
@@ -99,6 +107,7 @@ struct MasteringProcessor {
                 peakCeilingDB: settings.peakCeilingDB
             )
         }
+        saveDiagnostic(loud, to: diagnosticOutputDirectory, order: 7, id: "loudness", label: "ラウドネス調整後", logger: logger)
 
         let highReturnDecision = routePlan.decision(for: .highReturnGuard)
         let guarded: AudioSignal
@@ -118,6 +127,7 @@ struct MasteringProcessor {
                 )
             }
         }
+        saveDiagnostic(guarded, to: diagnosticOutputDirectory, order: 8, id: "highReturnGuard", label: "高域戻りガード後", logger: logger)
 
         let noiseReturnDecision = routePlan.decision(for: .noiseReturnGuard)
         logger?.start(.noiseReturnGuard)
@@ -131,6 +141,7 @@ struct MasteringProcessor {
                 maxPasses: noiseReturnDecision.action == .light ? 1 : 3
             )
         }
+        saveDiagnostic(noiseGuarded, to: diagnosticOutputDirectory, order: 9, id: "noiseReturnGuard", label: "ノイズ戻りガード後", logger: logger)
         let mastered = measure(label: "マスタリング/計測: 高域保持", logger: logger) {
             preserveMasteringHighFloor(
                 signal: noiseGuarded,
@@ -142,6 +153,7 @@ struct MasteringProcessor {
                 logger: logger
             )
         }
+        saveDiagnostic(mastered, to: diagnosticOutputDirectory, order: 10, id: "highPreserve", label: "高域保持後", logger: logger)
         let finalGuarded = measure(label: "マスタリング/計測: 最終ノイズ上限", logger: logger) {
             applyFinalNoiseReturnCeiling(
                 signal: mastered,
@@ -152,6 +164,7 @@ struct MasteringProcessor {
                 logger: logger
             )
         }
+        saveDiagnostic(finalGuarded, to: diagnosticOutputDirectory, order: 11, id: "finalNoiseCeiling", label: "最終ノイズ上限後", logger: logger)
         let finalHighPreserved = measure(label: "マスタリング/計測: 最終高域保持", logger: logger) {
             preserveMasteringHighFloor(
                 signal: finalGuarded,
@@ -163,6 +176,7 @@ struct MasteringProcessor {
                 logger: logger
             )
         }
+        saveDiagnostic(finalHighPreserved, to: diagnosticOutputDirectory, order: 12, id: "finalHighPreserve", label: "最終高域保持後", logger: logger)
         let finalLoudnessRestored = measure(label: "マスタリング/計測: 最終音量復帰", logger: logger) {
             restoreFinalLoudnessAfterGuards(
                 signal: finalHighPreserved,
@@ -174,6 +188,7 @@ struct MasteringProcessor {
                 logger: logger
             )
         }
+        saveDiagnostic(finalLoudnessRestored, to: diagnosticOutputDirectory, order: 13, id: "finalLoudnessRestore", label: "最終音量復帰後", logger: logger)
         let finalNoiseConfirmed = measure(label: "マスタリング/計測: 最終ノイズ確認", logger: logger) {
             applyFinalNoiseReturnCeiling(
                 signal: finalLoudnessRestored,
@@ -184,9 +199,22 @@ struct MasteringProcessor {
                 logger: logger
             )
         }
+        saveDiagnostic(finalNoiseConfirmed, to: diagnosticOutputDirectory, order: 14, id: "finalNoiseConfirm", label: "マスタリング最終", logger: logger)
         logger?.log("ルート/マスタリング/実行工程数: \(routePlan.runLikeCount)/\(MasteringRouteStep.allCases.count)")
         logger?.log("ルート/マスタリング/スキップ工程数: \(MasteringRouteStep.allCases.count - routePlan.runLikeCount)/\(MasteringRouteStep.allCases.count)")
         return finalNoiseConfirmed
+    }
+
+    private func saveDiagnostic(_ signal: AudioSignal, to directory: URL?, order: Int, id: String, label: String, logger: AudioProcessingLogger?) {
+        AudioStageDiagnostics.save(
+            signal,
+            to: directory,
+            domain: "mastering",
+            order: order,
+            id: id,
+            label: label,
+            logger: logger
+        )
     }
 
     private func measure<T>(
@@ -1040,7 +1068,7 @@ struct MasteringProcessor {
         let originalNoise = originalReferenceNoiseMeasurements
         let referenceSibilance = referenceNoise.comparableLevel(for: NoiseMeasurementID.sibilance)
         let targetSibilance = min(
-            originalNoise?.comparableLevel(for: NoiseMeasurementID.sibilance).map { $0 + 3.0 } ?? Double.infinity,
+            originalNoise?.comparableLevel(for: NoiseMeasurementID.sibilance).map { $0 + 2.7 } ?? Double.infinity,
             referenceSibilance.map { $0 > 18.0 ? 15.2 : Double.infinity } ?? Double.infinity
         )
 
@@ -1052,7 +1080,7 @@ struct MasteringProcessor {
             let currentSibilance = currentNoise.comparableLevel(for: NoiseMeasurementID.sibilance)
             let shouldLimitHiss = hissReturn > 4.0 && originalHissReturn > 0.5
             let shouldLimitSibilance = targetSibilance.isFinite
-                && currentSibilance.map { $0 > targetSibilance + 0.1 } == true
+                && currentSibilance.map { $0 > targetSibilance } == true
             guard shouldLimitHiss || shouldLimitSibilance else {
                 if pass > 1 {
                     logger?.log("ノイズ戻り: 緊急上限確認 \(pass - 1)/\(maxPasses)")
@@ -1083,7 +1111,7 @@ struct MasteringProcessor {
                         channel: $0,
                         sampleRate: sampleRate,
                         targetExcessDB: targetSibilance,
-                        strengthDB: min(excessDB * 1.60, 10.0)
+                        strengthDB: min(max(3.0, excessDB * 5.0), 10.0)
                     )
                 }
                 current = AudioSignal(channels: channels, sampleRate: sampleRate)
@@ -1121,12 +1149,12 @@ struct MasteringProcessor {
         guard frames.count >= 4 else { return channel }
 
         let medianDB = percentile(frames.map(\.levelDB), 0.50)
-        let peakLimitDB = medianDB + max(0, targetExcessDB - 0.5)
+        let peakLimitDB = medianDB + max(0, targetExcessDB - 1.0)
         var envelope = Array(repeating: Float.zero, count: channel.count)
 
         for frame in frames where frame.levelDB > peakLimitDB {
             let excessDB = frame.levelDB - peakLimitDB
-            let reductionDB = min(strengthDB, max(0, excessDB) * 1.60)
+            let reductionDB = min(strengthDB, max(0, excessDB) * 2.20)
             let reduction = 1 - powf(10, -Float(reductionDB) / 20)
             for index in frame.range {
                 envelope[index] = max(envelope[index], reduction)

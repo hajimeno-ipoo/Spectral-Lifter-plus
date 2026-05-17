@@ -12,6 +12,7 @@ struct MasteringService {
         referenceNoiseMeasurements: NoiseMeasurementSnapshot? = nil,
         originalReferenceFile: URL? = nil,
         originalReferenceNoiseMeasurements: NoiseMeasurementSnapshot? = nil,
+        diagnosticOutputDirectory: URL? = nil,
         logHandler: @escaping @Sendable (String) -> Void
     ) async throws -> URL {
         let outputURL = Self.temporaryOutputURL(for: inputFile)
@@ -65,6 +66,7 @@ struct MasteringService {
                 referenceNoiseMeasurements: routeNoiseMeasurements,
                 originalReferenceSignal: originalReferenceSignal,
                 originalReferenceNoiseMeasurements: originalReferenceNoiseMeasurements,
+                diagnosticOutputDirectory: diagnosticOutputDirectory,
                 logger: logger
             )
             logger.start(MasteringStep.save)
