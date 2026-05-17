@@ -562,27 +562,28 @@ struct NativeAudioProcessor {
             let label: String
             let lower: Double
             let upper: Double
-            let maxDropDB: Double
+            let maxAbsoluteDropDB: Double
             let maxBoostDB: Double
+            let minimumUsefulBoostDB: Double
         }
 
         let rules = [
-            Rule(label: "5-8kHz", lower: 5_000, upper: 8_000, maxDropDB: 5.5, maxBoostDB: 8.0),
-            Rule(label: "8-12kHz", lower: 8_000, upper: 12_000, maxDropDB: 4.0, maxBoostDB: 26.0),
-            Rule(label: "12-16kHz", lower: 12_000, upper: 16_000, maxDropDB: 4.0, maxBoostDB: 26.0),
-            Rule(label: "16kHz以上", lower: 16_000, upper: 20_000, maxDropDB: 6.0, maxBoostDB: 10.0)
+            Rule(label: "5-8kHz", lower: 5_000, upper: 8_000, maxAbsoluteDropDB: 3.0, maxBoostDB: 0.4, minimumUsefulBoostDB: 0.25),
+            Rule(label: "8-12kHz", lower: 8_000, upper: 12_000, maxAbsoluteDropDB: 0.20, maxBoostDB: 1.0, minimumUsefulBoostDB: 0.20),
+            Rule(label: "12-16kHz", lower: 12_000, upper: 16_000, maxAbsoluteDropDB: 0.20, maxBoostDB: 0.85, minimumUsefulBoostDB: 0.15),
+            Rule(label: "16kHz以上", lower: 16_000, upper: 20_000, maxAbsoluteDropDB: 2.20, maxBoostDB: 0.30, minimumUsefulBoostDB: 0.25)
         ]
 
         var current = signal
         var didApply = false
         for rule in rules {
-            let currentDB = bandBalanceDB(signal: current, lower: rule.lower, upper: rule.upper)
-            let referenceDB = bandBalanceDB(signal: reference, lower: rule.lower, upper: rule.upper)
+            let currentDB = bandRMSDB(signal: current, lower: rule.lower, upper: rule.upper)
+            let referenceDB = bandRMSDB(signal: reference, lower: rule.lower, upper: rule.upper)
             guard currentDB.isFinite, referenceDB.isFinite else { continue }
 
-            let targetDB = referenceDB - rule.maxDropDB
+            let targetDB = referenceDB - rule.maxAbsoluteDropDB
             let neededBoostDB = targetDB - currentDB
-            guard neededBoostDB > 0.25 else { continue }
+            guard neededBoostDB > rule.minimumUsefulBoostDB else { continue }
 
             let boostDB = min(neededBoostDB, rule.maxBoostDB)
             let gain = powf(10, Float(boostDB) / 20)
@@ -610,11 +611,25 @@ struct NativeAudioProcessor {
         referenceMeasurements: NoiseMeasurementSnapshot,
         logger: AudioProcessingLogger?
     ) -> AudioSignal {
+        let fallbackMeasurements = NoiseMeasurementService.analyze(
+            signal: fallback,
+            ids: [NoiseMeasurementID.hiss, NoiseMeasurementID.shimmer, NoiseMeasurementID.sibilance]
+        )
+        let fallbackHissReturn = noiseDelta(id: NoiseMeasurementID.hiss, reference: referenceMeasurements, current: fallbackMeasurements)
+        let fallbackShimmerReturn = noiseDelta(id: NoiseMeasurementID.shimmer, reference: referenceMeasurements, current: fallbackMeasurements)
+        let fallbackSibilanceReturn = noiseDelta(id: NoiseMeasurementID.sibilance, reference: referenceMeasurements, current: fallbackMeasurements)
+        let hissCeiling = max(2.0, fallbackHissReturn + 0.35)
+        let shimmerCeiling = max(2.0, fallbackShimmerReturn + 0.35)
+        let sibilanceCeiling = min(2.2, max(1.5, fallbackSibilanceReturn + 0.25))
+        let fallbackUltraHighDB = bandRMSDB(signal: fallback, lower: 16_000, upper: 20_000)
+        let ultraHighLiftCeilingDB = 0.25
         let candidates: [(mix: Float, signal: AudioSignal)] = [
             (1.0, signal),
             (0.75, blendSignals(base: fallback, boosted: signal, mix: 0.75)),
+            (0.60, blendSignals(base: fallback, boosted: signal, mix: 0.60)),
             (0.50, blendSignals(base: fallback, boosted: signal, mix: 0.50)),
-            (0.25, blendSignals(base: fallback, boosted: signal, mix: 0.25))
+            (0.25, blendSignals(base: fallback, boosted: signal, mix: 0.25)),
+            (0.10, blendSignals(base: fallback, boosted: signal, mix: 0.10))
         ]
 
         for candidate in candidates {
@@ -625,14 +640,19 @@ struct NativeAudioProcessor {
             let hissReturn = noiseDelta(id: NoiseMeasurementID.hiss, reference: referenceMeasurements, current: measurements)
             let shimmerReturn = noiseDelta(id: NoiseMeasurementID.shimmer, reference: referenceMeasurements, current: measurements)
             let sibilanceReturn = noiseDelta(id: NoiseMeasurementID.sibilance, reference: referenceMeasurements, current: measurements)
-            guard hissReturn <= 2.0, shimmerReturn <= 2.0, sibilanceReturn <= 1.5 else { continue }
+            let ultraHighLift = bandRMSDB(signal: candidate.signal, lower: 16_000, upper: 20_000) - fallbackUltraHighDB
+            guard hissReturn <= hissCeiling,
+                  shimmerReturn <= shimmerCeiling,
+                  sibilanceReturn <= sibilanceCeiling,
+                  ultraHighLift <= ultraHighLiftCeilingDB
+            else { continue }
             if candidate.mix < 1 {
-                logger?.log("補正後高域保持: ノイズ戻り抑制 mix \(String(format: "%.2f", candidate.mix))")
+                logger?.log("補正後高域保持: ノイズ/超高域戻り抑制 mix \(String(format: "%.2f", candidate.mix))")
             }
             return candidate.signal
         }
 
-        logger?.log("補正後高域保持: ノイズ戻り抑制で見送り")
+        logger?.log("補正後高域保持: ノイズ/超高域戻り抑制で見送り")
         return fallback
     }
 

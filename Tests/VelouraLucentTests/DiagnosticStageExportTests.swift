@@ -229,6 +229,39 @@ struct DiagnosticStageExportTests {
     }
 
     @Test
+    func correctionHighPreserveRestoresMusicalHighBandsWithoutReturningUltraHiss() async throws {
+        let tempDirectory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        let inputURL = tempDirectory.appending(path: "correction-high-preserve-musical-air.wav")
+        let diagnostics = tempDirectory.appending(path: "correction-stages")
+        let logs = DiagnosticLogCollector()
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        try makeCorrectionHighPreserveTone(at: inputURL)
+
+        _ = try await AudioProcessingService().process(
+            inputFile: inputURL,
+            denoiseStrength: .balanced,
+            analysisMode: .cpu,
+            diagnosticOutputDirectory: diagnostics
+        ) { message in
+            logs.append(message)
+        }
+
+        let shimmerLimited = try AudioFileService.loadAudio(from: diagnosticFile(in: diagnostics, containing: "07_correction_shimmerPeakLimit"))
+        let highPreserved = try AudioFileService.loadAudio(from: diagnosticFile(in: diagnostics, containing: "08_correction_correctionHighPreserve"))
+        let brillianceLift = bandLevelDB(signal: highPreserved, lower: 8_000, upper: 12_000)
+            - bandLevelDB(signal: shimmerLimited, lower: 8_000, upper: 12_000)
+        let airLift = bandLevelDB(signal: highPreserved, lower: 12_000, upper: 16_000)
+            - bandLevelDB(signal: shimmerLimited, lower: 12_000, upper: 16_000)
+        let ultraLift = bandLevelDB(signal: highPreserved, lower: 16_000, upper: 20_000)
+            - bandLevelDB(signal: shimmerLimited, lower: 16_000, upper: 20_000)
+
+        #expect(logs.values.contains { $0.hasPrefix("補正後高域保持/") })
+        #expect(brillianceLift >= 0.10)
+        #expect(airLift >= 0.10)
+        #expect(ultraLift <= 0.35)
+    }
+
+    @Test
     func diagnosticDirectoryResetRemovesStaleWAVs() throws {
         let tempDirectory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         let diagnostics = tempDirectory.appending(path: "correction")
@@ -508,6 +541,27 @@ struct DiagnosticStageExportTests {
             let musicalAir = sin(2 * Double.pi * 13_200 * time) * 0.026 * musicEnvelope
             let backgroundHiss = Double(highNoise[index])
             channel[index] = Float(body + musicalAir + backgroundHiss)
+        }
+
+        let file = try AVAudioFile(forWriting: url, settings: AudioFileService.interleavedFileSettings(sampleRate: sampleRate, channels: 1))
+        try file.write(from: buffer)
+    }
+
+    private func makeCorrectionHighPreserveTone(at url: URL, duration: Double = 2.4, sampleRate: Double = 48_000) throws {
+        let frameCount = Int(duration * sampleRate)
+        let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frameCount))!
+        buffer.frameLength = AVAudioFrameCount(frameCount)
+        let channel = buffer.floatChannelData![0]
+        for index in 0..<frameCount {
+            let time = Double(index) / sampleRate
+            let body = sin(2 * Double.pi * 220 * time) * 0.065
+                + sin(2 * Double.pi * 440 * time) * 0.055
+                + sin(2 * Double.pi * 880 * time) * 0.020
+            let brilliance = sin(2 * Double.pi * 9_600 * time) * 0.030
+            let air = sin(2 * Double.pi * 13_200 * time) * 0.024
+            let ultraHiss = sin(2 * Double.pi * 17_600 * time) * 0.004
+            channel[index] = Float(body + brilliance + air + ultraHiss)
         }
 
         let file = try AVAudioFile(forWriting: url, settings: AudioFileService.interleavedFileSettings(sampleRate: sampleRate, channels: 1))
