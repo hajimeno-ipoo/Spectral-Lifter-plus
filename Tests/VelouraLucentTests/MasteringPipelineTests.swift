@@ -99,6 +99,7 @@ struct MasteringPipelineTests {
 
         #expect(FileManager.default.fileExists(atPath: output.path()))
         #expect(logs.values.contains("ノイズ測定: 既存結果を使用"))
+        #expect(logs.values.contains("ノイズ戻り: 専用測定を開始"))
     }
 
     @Test
@@ -324,11 +325,47 @@ struct MasteringPipelineTests {
         let hissRule = InternalAudioJudgementPolicy.masteringNoiseReturnLimits.first {
             $0.id == NoiseMeasurementID.hiss
         }
+        let shimmerRule = InternalAudioJudgementPolicy.masteringNoiseReturnLimits.first {
+            $0.id == NoiseMeasurementID.shimmer
+        }
 
         #expect(hissRule?.lowerFrequency == 8_000)
         #expect(hissRule?.allowedReturnDB == 1.5)
-        #expect(hissRule?.reductionMultiplier == 0.55)
-        #expect(hissRule?.maxReductionDB == 4.0)
+        #expect(hissRule?.reductionMultiplier == 0.35)
+        #expect(hissRule?.maxReductionDB == 2.0)
+        #expect(shimmerRule?.lowerFrequency == 8_000)
+        #expect(shimmerRule?.upperFrequency == 16_000)
+        #expect(shimmerRule?.reductionMultiplier == 0.30)
+        #expect(shimmerRule?.maxReductionDB == 1.4)
+    }
+
+    @Test
+    func noiseReturnGuardPreservesSustainedMusicalHighBands() async throws {
+        let tempDirectory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        let inputURL = tempDirectory.appending(path: "noise-return-musical-high.wav")
+        let diagnostics = tempDirectory.appending(path: "mastering-stages")
+
+        try makeMusicalAirTone(at: inputURL)
+
+        _ = try await MasteringService().process(
+            inputFile: inputURL,
+            settings: MasteringProfile.streaming.settings,
+            diagnosticOutputDirectory: diagnostics
+        ) { _ in }
+
+        let beforeGuard = try AudioFileService.loadAudio(from: diagnosticFile(in: diagnostics, containing: "08_mastering_highReturnGuard"))
+        let afterGuard = try AudioFileService.loadAudio(from: diagnosticFile(in: diagnostics, containing: "09_mastering_noiseReturnGuard"))
+        let brillianceDrop = bandRMSDB(signal: afterGuard, lower: 8_000, upper: 12_000)
+            - bandRMSDB(signal: beforeGuard, lower: 8_000, upper: 12_000)
+        let airDrop = bandRMSDB(signal: afterGuard, lower: 12_000, upper: 16_000)
+            - bandRMSDB(signal: beforeGuard, lower: 12_000, upper: 16_000)
+        let ultraDrop = bandRMSDB(signal: afterGuard, lower: 16_000, upper: 20_000)
+            - bandRMSDB(signal: beforeGuard, lower: 16_000, upper: 20_000)
+
+        #expect(brillianceDrop >= -0.50)
+        #expect(airDrop >= -0.50)
+        #expect(ultraDrop >= -0.60)
     }
 
     @Test
@@ -534,6 +571,14 @@ private func parsedInteger(prefix: String, from logs: [String]) -> Int? {
         return nil
     }
     return Int(line.dropFirst(prefix.count).trimmingCharacters(in: .whitespacesAndNewlines))
+}
+
+private func diagnosticFile(in directory: URL, containing fragment: String) throws -> URL {
+    let contents = try FileManager.default.contentsOfDirectory(
+        at: directory,
+        includingPropertiesForKeys: nil
+    )
+    return try #require(contents.first { $0.lastPathComponent.contains(fragment) })
 }
 
 private func bandRMSDB(signal: AudioSignal, lower: Double, upper: Double) -> Double {

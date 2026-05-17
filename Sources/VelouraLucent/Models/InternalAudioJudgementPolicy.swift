@@ -74,8 +74,8 @@ enum InternalAudioJudgementPolicy {
             lowerFrequency: 8_000,
             upperFrequency: 20_000,
             allowedReturnDB: 1.5,
-            reductionMultiplier: 0.55,
-            maxReductionDB: 4.0
+            reductionMultiplier: 0.35,
+            maxReductionDB: 2.0
         ),
         NoiseReturnLimit(
             id: NoiseMeasurementID.sibilance,
@@ -90,8 +90,8 @@ enum InternalAudioJudgementPolicy {
             lowerFrequency: 8_000,
             upperFrequency: 16_000,
             allowedReturnDB: 1.4,
-            reductionMultiplier: 0.55,
-            maxReductionDB: 3.5
+            reductionMultiplier: 0.30,
+            maxReductionDB: 1.4
         )
     ]
 
