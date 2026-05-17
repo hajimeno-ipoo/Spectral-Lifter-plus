@@ -55,6 +55,97 @@ struct NativeAudioProcessingBenchmark: Equatable, Sendable {
     }
 }
 
+struct DenoiseMaskBreakdown: Equatable, Sendable {
+    let pass: Int
+    let bandOrder: Int
+    let band: String
+    let sampleCount: Int
+    let rawMaskDB: Double
+    let granularMaskDB: Double
+    let shimmerMaskDB: Double
+    let combinedNoiseMaskDB: Double
+    let finalMaskDB: Double
+
+    var logMessage: String {
+        String(
+            format: "ノイズ除去/マスク内訳/pass %d/%@: raw %.2f dB, granular %.2f dB, shimmer %.2f dB, combined %.2f dB, final %.2f dB",
+            pass,
+            band,
+            rawMaskDB,
+            granularMaskDB,
+            shimmerMaskDB,
+            combinedNoiseMaskDB,
+            finalMaskDB
+        )
+    }
+}
+
+private final class DenoiseMaskBreakdownCollector: @unchecked Sendable {
+    private struct Key: Hashable {
+        let pass: Int
+        let bandOrder: Int
+        let band: String
+    }
+
+    private struct Aggregate {
+        var sampleCount = 0
+        var rawMaskDB = 0.0
+        var granularMaskDB = 0.0
+        var shimmerMaskDB = 0.0
+        var combinedNoiseMaskDB = 0.0
+        var finalMaskDB = 0.0
+
+        mutating func add(_ breakdown: DenoiseMaskBreakdown) {
+            sampleCount += breakdown.sampleCount
+            rawMaskDB += breakdown.rawMaskDB * Double(breakdown.sampleCount)
+            granularMaskDB += breakdown.granularMaskDB * Double(breakdown.sampleCount)
+            shimmerMaskDB += breakdown.shimmerMaskDB * Double(breakdown.sampleCount)
+            combinedNoiseMaskDB += breakdown.combinedNoiseMaskDB * Double(breakdown.sampleCount)
+            finalMaskDB += breakdown.finalMaskDB * Double(breakdown.sampleCount)
+        }
+
+        func average(pass: Int, bandOrder: Int, band: String) -> DenoiseMaskBreakdown? {
+            guard sampleCount > 0 else { return nil }
+            let count = Double(sampleCount)
+            return DenoiseMaskBreakdown(
+                pass: pass,
+                bandOrder: bandOrder,
+                band: band,
+                sampleCount: sampleCount,
+                rawMaskDB: rawMaskDB / count,
+                granularMaskDB: granularMaskDB / count,
+                shimmerMaskDB: shimmerMaskDB / count,
+                combinedNoiseMaskDB: combinedNoiseMaskDB / count,
+                finalMaskDB: finalMaskDB / count
+            )
+        }
+    }
+
+    private let lock = NSLock()
+    private var storage: [Key: Aggregate] = [:]
+
+    func record(_ breakdown: DenoiseMaskBreakdown) {
+        let key = Key(pass: breakdown.pass, bandOrder: breakdown.bandOrder, band: breakdown.band)
+        lock.lock()
+        var aggregate = storage[key] ?? Aggregate()
+        aggregate.add(breakdown)
+        storage[key] = aggregate
+        lock.unlock()
+    }
+
+    var summaries: [DenoiseMaskBreakdown] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.compactMap { key, aggregate in
+            aggregate.average(pass: key.pass, bandOrder: key.bandOrder, band: key.band)
+        }
+        .sorted { lhs, rhs in
+            if lhs.pass != rhs.pass { return lhs.pass < rhs.pass }
+            return lhs.bandOrder < rhs.bandOrder
+        }
+    }
+}
+
 enum AudioAnalysisMode: String, CaseIterable, Identifiable, Equatable, Sendable {
     case auto
     case cpu
@@ -247,8 +338,12 @@ struct NativeAudioProcessor {
 
         logger?.start(.denoise)
         logger?.log("ノイズを除去します")
+        let denoiseMaskBreakdownCollector = diagnosticOutputDirectory == nil ? nil : DenoiseMaskBreakdownCollector()
         let denoised = measure("denoise", label: "ノイズ除去", recorder: benchmarkRecorder, logger: logger, progressStep: .denoise) {
-            SpectralGateDenoiser(settings: correctionSettings).process(signal: lowCleaned)
+            SpectralGateDenoiser(settings: correctionSettings, maskBreakdownCollector: denoiseMaskBreakdownCollector).process(signal: lowCleaned)
+        }
+        denoiseMaskBreakdownCollector?.summaries.forEach { breakdown in
+            logger?.log(breakdown.logMessage)
         }
         saveDiagnostic(denoised, to: diagnosticOutputDirectory, order: 2, id: "denoise", label: "ノイズ除去後", logger: logger)
         logger?.start(.sibilanceShimmerGuard)
@@ -1343,6 +1438,7 @@ struct AudioAnalyzer {
 
 private struct SpectralGateDenoiser: Sendable {
     let settings: CorrectionSettings
+    let maskBreakdownCollector: DenoiseMaskBreakdownCollector?
 
     private var tuning: DenoiseTuning {
         let base = Self.baseTuning(for: settings.profile)
@@ -1426,15 +1522,15 @@ private struct SpectralGateDenoiser: Sendable {
     func process(signal: AudioSignal) -> AudioSignal {
         let channels = mapChannelsConcurrently(signal.channels) { channel in
             var current = channel
-            for _ in 0..<tuning.passes {
-                current = processPass(current, sampleRate: signal.sampleRate)
+            for passIndex in 0..<tuning.passes {
+                current = processPass(current, sampleRate: signal.sampleRate, pass: passIndex + 1)
             }
             return current
         }
         return AudioSignal(channels: channels, sampleRate: signal.sampleRate)
     }
 
-    private func processPass(_ channel: [Float], sampleRate: Double) -> [Float] {
+    private func processPass(_ channel: [Float], sampleRate: Double, pass: Int) -> [Float] {
         var spectrogram = SpectralDSP.stft(channel)
         guard spectrogram.frameCount > 0 else { return channel }
         let binCount = spectrogram.binCount
@@ -1450,6 +1546,11 @@ private struct SpectralGateDenoiser: Sendable {
         )
         var noiseProfile = Array(repeating: Float.zero, count: binCount)
         var granularProfile = Array(repeating: Float.zero, count: binCount)
+        var maskBreakdowns = maskBreakdownCollector == nil ? [] : [
+            DenoiseMaskBreakdownAccumulator(bandOrder: 0, band: "8-12kHz", lower: 8_000, upper: 12_000),
+            DenoiseMaskBreakdownAccumulator(bandOrder: 1, band: "12-16kHz", lower: 12_000, upper: 16_000),
+            DenoiseMaskBreakdownAccumulator(bandOrder: 2, band: "16-20kHz", lower: 16_000, upper: 20_000)
+        ]
         let frameEnergy = spectrogram.frameAverageMagnitudes()
         let quietThreshold = SpectralDSP.percentile(frameEnergy, tuning.quietPercentile)
         let quietFrameIndices = frameEnergy.enumerated().compactMap { index, value in
@@ -1465,6 +1566,11 @@ private struct SpectralGateDenoiser: Sendable {
         var magnitudesByBin = Array(repeating: [Float](), count: binCount)
         var granularSums = Array(repeating: Float.zero, count: binCount)
         let smoothedFrameEnergy = SpectralDSP.movingAverage(frameEnergy, windowSize: 7)
+        let highBandMusicalProtection = HighBandMusicalProtection(
+            spectrogram: spectrogram,
+            frequencyStep: frequencyStep,
+            frameEnergy: frameEnergy
+        )
 
         for frameIndex in 0..<spectrogram.frameCount {
             let frameStart = frameIndex * binCount
@@ -1538,6 +1644,11 @@ private struct SpectralGateDenoiser: Sendable {
                     granularBaseline: granularProfile[binIndex],
                     coreProtection: tuning.coreProtection
                 )
+                let highFloorLift = highBandMusicalProtection.floorLift(frameIndex: frameIndex, frequency: frequency, pass: pass)
+                let protectedRawFloor = min(
+                    0.995,
+                    floor + highFloorLift
+                )
                 let rawMask = max(floor, min(1.0, (magnitude - threshold) / max(magnitude, 1e-6)))
                 let granularMask = max(
                     floor,
@@ -1554,13 +1665,35 @@ private struct SpectralGateDenoiser: Sendable {
                     exceptionRelaxation: shimmerExceptionRelaxation
                 )
                 let highBandWeight = min(1, max(0, Float((frequency - 8_000) / 8_000)))
-                let combinedNoiseMask = rawMask * (1 - highBandWeight) + min(rawMask, granularMask) * highBandWeight
+                let highProtectionWeight = min(1, highFloorLift / 0.30)
+                let nonTonalHighReduction = highBandWeight * (1 - highProtectionWeight) * 0.03
+                let nonTonalAwareRawMask = max(floor, rawMask - nonTonalHighReduction)
+                let protectedRawMask = max(protectedRawFloor, nonTonalAwareRawMask)
+                let combinedNoiseMask = protectedRawMask * (1 - highBandWeight) + min(protectedRawMask, granularMask) * highBandWeight
                 let mask = min(
                     1.0,
-                    max(floor, min(combinedNoiseMask, shimmerMask)) + transientProtectionLift(frameLift: frameTransientLift, frequency: frequency)
+                    max(floor, min(combinedNoiseMask, shimmerMask))
+                        + transientProtectionLift(frameLift: frameTransientLift, frequency: frequency)
                 )
+                if !maskBreakdowns.isEmpty {
+                    for breakdownIndex in maskBreakdowns.indices where maskBreakdowns[breakdownIndex].contains(frequency) {
+                        maskBreakdowns[breakdownIndex].record(
+                            rawMask: protectedRawMask,
+                            granularMask: granularMask,
+                            shimmerMask: shimmerMask,
+                            combinedNoiseMask: combinedNoiseMask,
+                            finalMask: mask
+                        )
+                    }
+                }
                 spectrogram.real[index] *= mask
                 spectrogram.imag[index] *= mask
+            }
+        }
+
+        if let maskBreakdownCollector {
+            for breakdown in maskBreakdowns.compactMap({ $0.summary(pass: pass) }) {
+                maskBreakdownCollector.record(breakdown)
             }
         }
 
@@ -1613,6 +1746,215 @@ private struct SpectralGateDenoiser: Sendable {
     }
 }
 
+private struct DenoiseMaskBreakdownAccumulator {
+    let bandOrder: Int
+    let band: String
+    let lower: Double
+    let upper: Double
+    private var sampleCount = 0
+    private var rawMaskDB = 0.0
+    private var granularMaskDB = 0.0
+    private var shimmerMaskDB = 0.0
+    private var combinedNoiseMaskDB = 0.0
+    private var finalMaskDB = 0.0
+
+    init(bandOrder: Int, band: String, lower: Double, upper: Double) {
+        self.bandOrder = bandOrder
+        self.band = band
+        self.lower = lower
+        self.upper = upper
+    }
+
+    func contains(_ frequency: Double) -> Bool {
+        frequency >= lower && frequency < upper
+    }
+
+    mutating func record(rawMask: Float, granularMask: Float, shimmerMask: Float, combinedNoiseMask: Float, finalMask: Float) {
+        sampleCount += 1
+        rawMaskDB += Self.decibels(rawMask)
+        granularMaskDB += Self.decibels(granularMask)
+        shimmerMaskDB += Self.decibels(shimmerMask)
+        combinedNoiseMaskDB += Self.decibels(combinedNoiseMask)
+        finalMaskDB += Self.decibels(finalMask)
+    }
+
+    func summary(pass: Int) -> DenoiseMaskBreakdown? {
+        guard sampleCount > 0 else { return nil }
+        let count = Double(sampleCount)
+        return DenoiseMaskBreakdown(
+            pass: pass,
+            bandOrder: bandOrder,
+            band: band,
+            sampleCount: sampleCount,
+            rawMaskDB: rawMaskDB / count,
+            granularMaskDB: granularMaskDB / count,
+            shimmerMaskDB: shimmerMaskDB / count,
+            combinedNoiseMaskDB: combinedNoiseMaskDB / count,
+            finalMaskDB: finalMaskDB / count
+        )
+    }
+
+    private static func decibels(_ gain: Float) -> Double {
+        20 * log10(max(Double(gain), 1e-6))
+    }
+}
+
+private struct HighBandMusicalProtection {
+    private struct Band {
+        let lower: Double
+        let upper: Double
+        let baseLift: Float
+        let secondPassLift: Float
+        let frameLift: [Float]
+
+        func contains(_ frequency: Double) -> Bool {
+            frequency >= lower && frequency < upper
+        }
+    }
+
+    private let bands: [Band]
+
+    init(spectrogram: Spectrogram, frequencyStep: Double, frameEnergy: [Float]) {
+        let bodyEnergy = Self.bandEnergy(in: spectrogram, lower: 160, upper: 5_000, frequencyStep: frequencyStep)
+        let bodyReference = max(SpectralDSP.percentile(bodyEnergy, 50), 1e-7)
+        let frameReference = max(SpectralDSP.percentile(frameEnergy, 50), 1e-7)
+        let quietFrameThreshold = SpectralDSP.percentile(frameEnergy, 20)
+        let bodyWeights = bodyEnergy.indices.map { index -> Float in
+            let bodyRatio = bodyEnergy[index] / bodyReference
+            let frameRatio = frameEnergy[index] / frameReference
+            let bodyWeight = clamped((bodyRatio - 0.20) / 0.55, min: 0, max: 1)
+            let frameWeight = clamped((frameRatio - 0.30) / 0.50, min: 0, max: 1)
+            return bodyWeight * frameWeight
+        }
+
+        bands = [
+            Self.makeBand(
+                spectrogram: spectrogram,
+                frequencyStep: frequencyStep,
+                lower: 8_000,
+                upper: 12_000,
+                baseLift: 0.98,
+                secondPassLift: 0.05,
+                frameEnergy: frameEnergy,
+                quietFrameThreshold: quietFrameThreshold,
+                bodyWeights: bodyWeights
+            ),
+            Self.makeBand(
+                spectrogram: spectrogram,
+                frequencyStep: frequencyStep,
+                lower: 12_000,
+                upper: 16_000,
+                baseLift: 1.05,
+                secondPassLift: 0.06,
+                frameEnergy: frameEnergy,
+                quietFrameThreshold: quietFrameThreshold,
+                bodyWeights: bodyWeights
+            ),
+            Self.makeBand(
+                spectrogram: spectrogram,
+                frequencyStep: frequencyStep,
+                lower: 16_000,
+                upper: 20_000,
+                baseLift: 0.94,
+                secondPassLift: 0.04,
+                frameEnergy: frameEnergy,
+                quietFrameThreshold: quietFrameThreshold,
+                bodyWeights: bodyWeights
+            )
+        ]
+    }
+
+    func floorLift(frameIndex: Int, frequency: Double, pass: Int) -> Float {
+        guard let band = bands.first(where: { $0.contains(frequency) }),
+              band.frameLift.indices.contains(frameIndex)
+        else {
+            return 0
+        }
+        let passLift = pass > 1 ? band.secondPassLift : 0
+        return band.frameLift[frameIndex] + passLift * min(1, band.frameLift[frameIndex] / max(band.baseLift, 1e-6))
+    }
+
+    private static func makeBand(
+        spectrogram: Spectrogram,
+        frequencyStep: Double,
+        lower: Double,
+        upper: Double,
+        baseLift: Float,
+        secondPassLift: Float,
+        frameEnergy: [Float],
+        quietFrameThreshold: Float,
+        bodyWeights: [Float]
+    ) -> Band {
+        let energy = bandEnergy(in: spectrogram, lower: lower, upper: upper, frequencyStep: frequencyStep)
+        let peakShare = bandPeakShare(in: spectrogram, lower: lower, upper: upper, frequencyStep: frequencyStep)
+        let smoothed = SpectralDSP.movingAverage(energy, windowSize: 9)
+        let reference = max(SpectralDSP.percentile(energy, 50), 1e-7)
+        let quietEnergy = energy.indices.compactMap { index -> Float? in
+            frameEnergy.indices.contains(index) && frameEnergy[index] <= quietFrameThreshold ? energy[index] : nil
+        }
+        let quietReference = max(SpectralDSP.percentile(quietEnergy.isEmpty ? energy : quietEnergy, 50), 1e-7)
+        let lift = energy.indices.map { index -> Float in
+            let presence = clamped((energy[index] / reference - 0.20) / 0.50, min: 0, max: 1)
+            let stability = clamped(
+                1 - abs(energy[index] - smoothed[index]) / max(smoothed[index], 1e-7) * 1.2,
+                min: 0,
+                max: 1
+            )
+            let tonalWeight = clamped((peakShare[index] - 0.06) / 0.10, min: 0, max: 1)
+            let quietExcessWeight = clamped((energy[index] / quietReference - 1.05) / 0.90, min: 0, max: 1)
+            let musicalHighWeight = max(tonalWeight, quietExcessWeight)
+            let bodyWeight = bodyWeights.indices.contains(index) ? bodyWeights[index] : 0
+            return baseLift * bodyWeight * presence * stability * musicalHighWeight
+        }
+
+        return Band(lower: lower, upper: upper, baseLift: baseLift, secondPassLift: secondPassLift, frameLift: lift)
+    }
+
+    private static func bandEnergy(in spectrogram: Spectrogram, lower: Double, upper: Double, frequencyStep: Double) -> [Float] {
+        let (startBin, endBin) = binRange(in: spectrogram, lower: lower, upper: upper, frequencyStep: frequencyStep)
+        guard endBin > startBin else {
+            return Array(repeating: 0, count: spectrogram.frameCount)
+        }
+
+        var values = Array(repeating: Float.zero, count: spectrogram.frameCount)
+        for frameIndex in 0..<spectrogram.frameCount {
+            var sum: Float = 0
+            for binIndex in startBin...endBin {
+                sum += spectrogram.magnitude(frameIndex: frameIndex, binIndex: binIndex)
+            }
+            values[frameIndex] = sum / Float(endBin - startBin + 1)
+        }
+        return values
+    }
+
+    private static func bandPeakShare(in spectrogram: Spectrogram, lower: Double, upper: Double, frequencyStep: Double) -> [Float] {
+        let (startBin, endBin) = binRange(in: spectrogram, lower: lower, upper: upper, frequencyStep: frequencyStep)
+        guard endBin > startBin else {
+            return Array(repeating: 0, count: spectrogram.frameCount)
+        }
+
+        var values = Array(repeating: Float.zero, count: spectrogram.frameCount)
+        for frameIndex in 0..<spectrogram.frameCount {
+            var sum: Float = 0
+            var peak: Float = 0
+            for binIndex in startBin...endBin {
+                let magnitude = spectrogram.magnitude(frameIndex: frameIndex, binIndex: binIndex)
+                sum += magnitude
+                peak = max(peak, magnitude)
+            }
+            values[frameIndex] = peak / max(sum, 1e-7)
+        }
+        return values
+    }
+
+    private static func binRange(in spectrogram: Spectrogram, lower: Double, upper: Double, frequencyStep: Double) -> (Int, Int) {
+        let maxBin = spectrogram.binCount - 1
+        let startBin = min(max(Int(lower / frequencyStep), 0), maxBin)
+        let endBin = min(max(Int(upper / frequencyStep), startBin), maxBin)
+        return (startBin, endBin)
+    }
+}
+
 struct DenoiseMaskCoefficients: Sendable {
     let highBandBias: [Float]
     let granularProfileScale: [Float]
@@ -1635,9 +1977,9 @@ struct DenoiseMaskCoefficients: Sendable {
 
         for binIndex in 0..<binCount {
             let normalizedBand = Float(binIndex) / denominator
-            highBandBias.append(0.94 + powf(normalizedBand, 1.25) * 0.18)
+            highBandBias.append(0.90 + powf(normalizedBand, 1.25) * 0.08)
             granularProfileScale.append(max(0, (normalizedBand - 0.42) / 0.58))
-            thresholdScale.append(0.92 + powf(normalizedBand, 1.1) * 0.24)
+            thresholdScale.append(0.90 + powf(normalizedBand, 1.1) * 0.12)
             floor.append(lowBandFloor + (highBandFloor - lowBandFloor) * powf(normalizedBand, 1.25))
             granularThresholdScale.append(1.1 + normalizedBand * 0.6)
         }

@@ -16,9 +16,9 @@ struct DenoiseMaskCoefficientTests {
 
         for binIndex in stride(from: 0, to: binCount, by: 17) {
             let normalizedBand = Float(binIndex) / Float(max(binCount - 1, 1))
-            expectClose(coefficients.highBandBias[binIndex], 0.94 + powf(normalizedBand, 1.25) * 0.18)
+            expectClose(coefficients.highBandBias[binIndex], 0.90 + powf(normalizedBand, 1.25) * 0.08)
             expectClose(coefficients.granularProfileScale[binIndex], max(0, (normalizedBand - 0.42) / 0.58))
-            expectClose(coefficients.thresholdScale[binIndex], 0.92 + powf(normalizedBand, 1.1) * 0.24)
+            expectClose(coefficients.thresholdScale[binIndex], 0.90 + powf(normalizedBand, 1.1) * 0.12)
             expectClose(
                 coefficients.floor[binIndex],
                 lowBandFloor + (highBandFloor - lowBandFloor) * powf(normalizedBand, 1.25)
@@ -48,7 +48,7 @@ struct DenoiseMaskCoefficientTests {
             let granularActivity: Float = 0.015 + Float(binIndex % 11) * 0.001
             let transientLift: Float = 0.03
 
-            let inlineThreshold = noiseProfile * thresholdMultiplier * (0.92 + powf(normalizedBand, 1.1) * 0.24)
+            let inlineThreshold = noiseProfile * thresholdMultiplier * (0.90 + powf(normalizedBand, 1.1) * 0.12)
             let inlineFloor = lowBandFloor + (highBandFloor - lowBandFloor) * powf(normalizedBand, 1.25)
             let inlineRawMask = max(inlineFloor, min(1.0, (magnitude - inlineThreshold) / max(magnitude, 1e-6)))
             let inlineGranularThreshold = granularProfile * (1.1 + normalizedBand * 0.6)

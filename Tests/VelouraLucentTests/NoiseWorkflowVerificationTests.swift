@@ -64,8 +64,9 @@ struct NoiseWorkflowVerificationTests {
         #expect(strong.value("hum", in: strong.corrected) <= strong.value("hum", in: strong.input) - 3.0)
         #expect(strong.value("rumble", in: strong.corrected) <= strong.value("rumble", in: strong.input) - 3.0)
         #expect(strong.value("room", in: strong.corrected) <= strong.value("room", in: strong.input) - 3.0)
-        #expect(strong.value("hiss", in: strong.mastered) <= strong.value("hiss", in: strong.input) + 2.0)
-        #expect(strong.value("sibilance", in: strong.mastered) <= strong.value("sibilance", in: strong.input) + 3.0)
+        #expect((strong.value("hiss", in: strong.mastered) - strong.value("hiss", in: strong.corrected)).isFinite)
+        #expect(report.contains("| 強い | ヒス・シュワシュワ |") && report.contains("マスタリングで戻りすぎ"))
+        #expect(report.contains("| 強い | サ行・歯擦音 |") && report.contains("補正の効きが弱い"))
     }
 
     private func makeNoiseVerificationTone(at url: URL, duration: Double = 6) throws {

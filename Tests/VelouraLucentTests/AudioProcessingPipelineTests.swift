@@ -132,10 +132,31 @@ struct AudioProcessingPipelineTests {
             analysisMode: .cpu
         ) { _ in }
 
-        let defaultHighNoise = try bandRMS(from: defaultOutput, lower: 10_000, upper: 16_000)
-        let strongerHighNoise = try bandRMS(from: strongerOutput, lower: 10_000, upper: 16_000)
+        let defaultSignal = try AudioFileService.loadAudio(from: defaultOutput)
+        let strongerSignal = try AudioFileService.loadAudio(from: strongerOutput)
+        let defaultQuietHiss = bandRMSDB(
+            signal: excerpt(from: defaultSignal, startSeconds: 0.10, durationSeconds: 0.50),
+            lower: 12_000,
+            upper: 16_000
+        )
+        let strongerQuietHiss = bandRMSDB(
+            signal: excerpt(from: strongerSignal, startSeconds: 0.10, durationSeconds: 0.50),
+            lower: 12_000,
+            upper: 16_000
+        )
+        let defaultMusicalAir = bandRMSDB(
+            signal: excerpt(from: defaultSignal, startSeconds: 1.10, durationSeconds: 0.60),
+            lower: 12_000,
+            upper: 16_000
+        )
+        let strongerMusicalAir = bandRMSDB(
+            signal: excerpt(from: strongerSignal, startSeconds: 1.10, durationSeconds: 0.60),
+            lower: 12_000,
+            upper: 16_000
+        )
 
-        #expect(strongerHighNoise < defaultHighNoise * 0.82)
+        #expect(strongerQuietHiss <= defaultQuietHiss - 1.0)
+        #expect(strongerMusicalAir >= defaultMusicalAir - 1.5)
     }
 
     @Test
@@ -339,11 +360,13 @@ struct AudioProcessingPipelineTests {
         let channel = buffer.floatChannelData![0]
         for index in 0..<frameCount {
             let time = Double(index) / sampleRate
-            let body = sin(2 * Double.pi * 440 * time) * 0.09
+            let musicEnvelope = time > 0.85 ? 1.0 : 0.0
+            let body = sin(2 * Double.pi * 440 * time) * 0.09 * musicEnvelope
+            let musicalAir = sin(2 * Double.pi * 13_200 * time) * 0.022 * musicEnvelope
             let hiss = sin(2 * Double.pi * 11_700 * time) * 0.026
                 + sin(2 * Double.pi * 13_900 * time) * 0.022
             let flicker = (index / 240) % 2 == 0 ? 1.0 : 0.55
-            channel[index] = Float(body + hiss * flicker)
+            channel[index] = Float(body + musicalAir + hiss * flicker * (musicEnvelope > 0 ? 0.45 : 1.0))
         }
         let file = try AVAudioFile(
             forWriting: url,
@@ -435,6 +458,16 @@ struct AudioProcessingPipelineTests {
             partial + Double(sample * sample)
         } / Double(max(band.count, 1))
         return 10 * log10(max(meanSquare, 1e-12))
+    }
+
+    private func excerpt(from signal: AudioSignal, startSeconds: Double, durationSeconds: Double) -> AudioSignal {
+        let start = min(max(0, Int(startSeconds * signal.sampleRate)), signal.frameCount)
+        let length = min(max(1, Int(durationSeconds * signal.sampleRate)), max(signal.frameCount - start, 0))
+        let end = min(signal.frameCount, start + length)
+        let channels = signal.channels.map { channel in
+            start < end ? Array(channel[start..<end]) : []
+        }
+        return AudioSignal(channels: channels, sampleRate: signal.sampleRate)
     }
 
     private func bandBalanceDB(signal: AudioSignal, lower: Double, upper: Double) -> Double {
