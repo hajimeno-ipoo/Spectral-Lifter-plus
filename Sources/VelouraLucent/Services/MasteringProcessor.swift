@@ -13,6 +13,7 @@ struct MasteringProcessor {
     ) -> AudioSignal {
         let dynamicsRetention = clamped(settings.dynamicsRetention, min: 0, max: 1)
         let finishingIntensity = clamped(settings.finishingIntensity, min: 0, max: 1)
+        let loudnessPolicy = settings.loudnessAdjustmentPolicy
         let routePlan = MasteringRoutePlan.make(
             analysis: analysis,
             settings: settings,
@@ -100,10 +101,22 @@ struct MasteringProcessor {
 
         logger?.start(.loudness)
         logger?.log(MasteringStep.loudness.rawValue)
+        let effectiveLoudnessTarget = effectiveTargetLoudness(
+            settings.targetLoudness,
+            dynamicsRetention: dynamicsRetention,
+            finishingIntensity: finishingIntensity
+        )
+        let loudnessBaseline = MasteringAnalysisService.integratedLoudness(signal: current)
+        let guidedLoudnessTarget = guidedLoudnessTarget(
+            currentLoudness: loudnessBaseline,
+            requestedTargetLKFS: effectiveLoudnessTarget,
+            policy: loudnessPolicy,
+            logger: logger
+        )
         let loud = measure(label: "ラウドネス", logger: logger, progressStep: .loudness) {
             applyLoudness(
                 signal: current,
-                targetLKFS: effectiveTargetLoudness(settings.targetLoudness, dynamicsRetention: dynamicsRetention, finishingIntensity: finishingIntensity),
+                targetLKFS: guidedLoudnessTarget,
                 peakCeilingDB: settings.peakCeilingDB
             )
         }
@@ -182,8 +195,9 @@ struct MasteringProcessor {
                 reference: signal,
                 referenceNoiseMeasurements: referenceNoiseMeasurements,
                 originalReferenceNoiseMeasurements: originalReferenceNoiseMeasurements,
-                targetLKFS: effectiveTargetLoudness(settings.targetLoudness, dynamicsRetention: dynamicsRetention, finishingIntensity: finishingIntensity),
+                targetLKFS: guidedLoudnessTarget,
                 peakCeilingDB: settings.peakCeilingDB,
+                policy: loudnessPolicy,
                 logger: logger
             )
         }
@@ -198,10 +212,22 @@ struct MasteringProcessor {
                 logger: logger
             )
         }
-        saveDiagnostic(finalNoiseConfirmed, to: diagnosticOutputDirectory, order: 14, id: "finalNoiseConfirm", label: "マスタリング最終", logger: logger)
+        saveDiagnostic(finalNoiseConfirmed, to: diagnosticOutputDirectory, order: 14, id: "finalNoiseConfirm", label: "最終ノイズ確認後", logger: logger)
+        let finalLoudnessBounded = measure(label: "マスタリング/計測: 最終音量上限", logger: logger) {
+            enforceFinalLoudnessPolicyBounds(
+                signal: finalNoiseConfirmed,
+                baselineLoudness: loudnessBaseline,
+                referenceNoiseMeasurements: referenceNoiseMeasurements,
+                originalReferenceNoiseMeasurements: originalReferenceNoiseMeasurements,
+                peakCeilingDB: settings.peakCeilingDB,
+                policy: loudnessPolicy,
+                logger: logger
+            )
+        }
+        saveDiagnostic(finalLoudnessBounded, to: diagnosticOutputDirectory, order: 15, id: "finalLoudnessBounds", label: "マスタリング最終", logger: logger)
         logger?.log("ルート/マスタリング/実行工程数: \(routePlan.runLikeCount)/\(MasteringRouteStep.allCases.count)")
         logger?.log("ルート/マスタリング/スキップ工程数: \(MasteringRouteStep.allCases.count - routePlan.runLikeCount)/\(MasteringRouteStep.allCases.count)")
-        return finalNoiseConfirmed
+        return finalLoudnessBounded
     }
 
     private func saveDiagnostic(_ signal: AudioSignal, to directory: URL?, order: Int, id: String, label: String, logger: AudioProcessingLogger?) {
@@ -1288,6 +1314,7 @@ struct MasteringProcessor {
         originalReferenceNoiseMeasurements: NoiseMeasurementSnapshot?,
         targetLKFS: Float,
         peakCeilingDB: Float,
+        policy: LoudnessAdjustmentPolicy,
         logger: AudioProcessingLogger?
     ) -> AudioSignal {
         let currentLoudness = MasteringAnalysisService.integratedLoudness(signal: signal)
@@ -1303,7 +1330,7 @@ struct MasteringProcessor {
         let peak = max(MasteringAnalysisService.approximateTruePeak(signal.channels), 1e-6)
         let currentPeakDB = 20 * log10(Double(peak))
         let peakHeadroomDB = max(0, Double(peakCeilingDB) - currentPeakDB)
-        let requestedGainDB = min(loudnessDeficitDB, peakHeadroomDB, 2.0)
+        let requestedGainDB = min(loudnessDeficitDB, peakHeadroomDB, policy.finalRestoreLimitDB)
         guard requestedGainDB > 0.25 else {
             logger?.log("最終音量復帰: ピーク余裕不足")
             return enforcePeakCeiling(signal: signal, peakCeilingDB: peakCeilingDB)
@@ -1327,6 +1354,110 @@ struct MasteringProcessor {
         }
         logger?.log("最終音量復帰: +\(String(format: "%.1f", requestedGainDB)) dB")
         return candidate
+    }
+
+    private func guidedLoudnessTarget(
+        currentLoudness: Float,
+        requestedTargetLKFS: Float,
+        policy: LoudnessAdjustmentPolicy,
+        logger: AudioProcessingLogger?
+    ) -> Float {
+        guard currentLoudness.isFinite, currentLoudness > -69 else {
+            logger?.log("ラウドネス方針: \(policy.label) / 無音に近いため音量変更なし")
+            return currentLoudness
+        }
+
+        let requestedDeltaDB = Double(requestedTargetLKFS - currentLoudness)
+        let appliedDeltaDB: Double
+        if abs(requestedDeltaDB) < policy.deadbandDB {
+            appliedDeltaDB = 0
+        } else if requestedDeltaDB > 0 {
+            appliedDeltaDB = min(requestedDeltaDB, policy.maxBoostDB)
+        } else {
+            appliedDeltaDB = max(requestedDeltaDB, -policy.maxCutDB)
+        }
+
+        logger?.log(
+            "ラウドネス方針: \(policy.label) / 目安差 \(formatSignedDB(requestedDeltaDB)) -> 適用 \(formatSignedDB(appliedDeltaDB))"
+        )
+        return currentLoudness + Float(appliedDeltaDB)
+    }
+
+    private func enforceFinalLoudnessPolicyBounds(
+        signal: AudioSignal,
+        baselineLoudness: Float,
+        referenceNoiseMeasurements: NoiseMeasurementSnapshot?,
+        originalReferenceNoiseMeasurements: NoiseMeasurementSnapshot?,
+        peakCeilingDB: Float,
+        policy: LoudnessAdjustmentPolicy,
+        logger: AudioProcessingLogger?
+    ) -> AudioSignal {
+        let currentLoudness = MasteringAnalysisService.integratedLoudness(signal: signal)
+        guard baselineLoudness.isFinite,
+              currentLoudness.isFinite,
+              baselineLoudness > -69,
+              currentLoudness > -69
+        else {
+            logger?.log("最終音量上限: 無音に近いためピーク確認のみ")
+            return enforcePeakCeiling(signal: signal, peakCeilingDB: peakCeilingDB)
+        }
+
+        let toleranceDB = 0.05
+        let allowedMaximum = Double(baselineLoudness) + policy.maxBoostDB
+        let allowedMinimum = Double(baselineLoudness) - policy.maxCutDB
+        let current = Double(currentLoudness)
+
+        if current > allowedMaximum + toleranceDB {
+            let gainDB = allowedMaximum - current
+            logger?.log("最終音量上限: \(formatSignedDB(gainDB)) / \(policy.label) の上限内へ調整")
+            return enforcePeakCeiling(
+                signal: applyGain(signal: signal, gainDB: gainDB),
+                peakCeilingDB: peakCeilingDB
+            )
+        }
+
+        if current < allowedMinimum - toleranceDB {
+            let loudnessDeficitDB = allowedMinimum - current
+            let peak = max(MasteringAnalysisService.approximateTruePeak(signal.channels), 1e-6)
+            let currentPeakDB = 20 * log10(Double(peak))
+            let peakHeadroomDB = max(0, Double(peakCeilingDB) - currentPeakDB)
+            let restoreDB = min(loudnessDeficitDB, peakHeadroomDB, policy.finalRestoreLimitDB)
+            guard restoreDB > 0.25 else {
+                logger?.log("最終音量下限: ピーク余裕不足")
+                return enforcePeakCeiling(signal: signal, peakCeilingDB: peakCeilingDB)
+            }
+
+            let candidate = enforcePeakCeiling(
+                signal: applyGain(signal: signal, gainDB: restoreDB),
+                peakCeilingDB: peakCeilingDB
+            )
+            let probePlan = noiseReturnProbePlan(for: signal)
+            let baseProbe = noiseReturnProbe(signal: signal, plan: probePlan)
+            let candidateProbe = noiseReturnProbe(signal: candidate, plan: probePlan)
+            guard isFinalLoudnessRestoreNoiseSafe(
+                baseProbe: baseProbe,
+                candidateProbe: candidateProbe,
+                referenceMeasurements: referenceNoiseMeasurements,
+                originalReferenceMeasurements: originalReferenceNoiseMeasurements
+            ), isFinalLoudnessRestoreMudBalanceSafe(base: signal, candidate: candidate) else {
+                logger?.log("最終音量下限: ノイズ保護で見送り")
+                return enforcePeakCeiling(signal: signal, peakCeilingDB: peakCeilingDB)
+            }
+
+            let candidateLoudness = MasteringAnalysisService.integratedLoudness(signal: candidate)
+            let appliedRestoreDB = candidateLoudness.isFinite
+                ? Double(candidateLoudness - currentLoudness)
+                : loudnessDeficitDB
+            logger?.log("最終音量下限: \(formatSignedDB(appliedRestoreDB)) / \(policy.label) の下限内へ調整")
+            return candidate
+        }
+
+        logger?.log("最終音量上限: \(policy.label) の範囲内")
+        return enforcePeakCeiling(signal: signal, peakCeilingDB: peakCeilingDB)
+    }
+
+    private func formatSignedDB(_ value: Double) -> String {
+        String(format: "%+.1f dB", value)
     }
 
     private func isFinalLoudnessRestoreNoiseSafe(
@@ -1412,6 +1543,9 @@ struct MasteringProcessor {
 
     private func applyLoudness(signal: AudioSignal, targetLKFS: Float, peakCeilingDB: Float) -> AudioSignal {
         let currentLoudness = MasteringAnalysisService.integratedLoudness(signal: signal)
+        guard currentLoudness.isFinite, targetLKFS.isFinite, currentLoudness > -69 else {
+            return enforcePeakCeiling(signal: signal, peakCeilingDB: peakCeilingDB)
+        }
         let gain = powf(10, (targetLKFS - currentLoudness) / 20)
         let peakCeiling = powf(10, peakCeilingDB / 20)
         let gainedChannels = signal.channels.map { channel in channel.map { $0 * gain } }

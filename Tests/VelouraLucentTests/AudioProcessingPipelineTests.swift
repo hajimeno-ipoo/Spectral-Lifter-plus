@@ -294,6 +294,7 @@ struct AudioProcessingPipelineTests {
     @Test
     func correctionLeavesFinalLoudnessToMastering() async throws {
         let tempDirectory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        let diagnostics = tempDirectory.appending(path: "mastering-stages")
         try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
         let inputURL = tempDirectory.appending(path: "loudness-reference.wav")
 
@@ -306,7 +307,8 @@ struct AudioProcessingPipelineTests {
         ) { _ in }
         let masteredOutput = try await MasteringService().process(
             inputFile: correctedOutput,
-            profile: .streaming
+            settings: MasteringProfile.streaming.settings,
+            diagnosticOutputDirectory: diagnostics
         ) { _ in }
 
         let inputSignal = try AudioFileService.loadAudio(from: inputURL)
@@ -315,10 +317,15 @@ struct AudioProcessingPipelineTests {
         let inputLoudness = MasteringAnalysisService.integratedLoudness(signal: inputSignal)
         let correctedLoudness = MasteringAnalysisService.integratedLoudness(signal: correctedSignal)
         let masteredLoudness = MasteringAnalysisService.integratedLoudness(signal: masteredSignal)
+        let baselineLoudness = MasteringAnalysisService.integratedLoudness(
+            signal: try AudioFileService.loadAudio(from: audioProcessingDiagnosticFile(in: diagnostics, containing: "06_mastering_stereo"))
+        )
         let masteredPeak = MasteringAnalysisService.approximateTruePeak(masteredSignal.channels)
+        let policy = MasteringProfile.streaming.settings.loudnessAdjustmentPolicy
 
         #expect(correctedLoudness < inputLoudness - 3)
-        #expect(masteredLoudness > correctedLoudness + 10)
+        #expect(masteredLoudness > correctedLoudness)
+        #expect(Double(masteredLoudness - baselineLoudness) <= policy.maxBoostDB + 0.2)
         #expect(masteredPeak <= powf(10, MasteringProfile.streaming.settings.peakCeilingDB / 20) + 0.02)
     }
 
@@ -517,6 +524,14 @@ struct AudioProcessingPipelineTests {
             guard line.hasPrefix(prefix) else { return nil }
             return Int(line.dropFirst(prefix.count))
         }.last
+    }
+
+    private func audioProcessingDiagnosticFile(in directory: URL, containing fragment: String) throws -> URL {
+        let contents = try FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil
+        )
+        return try #require(contents.first { $0.lastPathComponent.contains(fragment) })
     }
 
 }

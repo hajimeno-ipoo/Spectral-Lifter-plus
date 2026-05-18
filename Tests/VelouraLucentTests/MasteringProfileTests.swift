@@ -47,4 +47,22 @@ struct MasteringProfileTests {
         settings.peakCeilingDB = -0.6
         #expect(settings.aggressiveSettingWarnings.contains("歪みやすい設定です。配信や再生環境によって音割れする可能性があります。"))
     }
+
+    @Test
+    func profilesExposeLoudnessAdjustmentPolicies() {
+        let natural = MasteringProfile.natural.settings.loudnessAdjustmentPolicy
+        let streaming = MasteringProfile.streaming.settings.loudnessAdjustmentPolicy
+        let forward = MasteringProfile.forward.settings.loudnessAdjustmentPolicy
+
+        #expect(natural.label == "自然")
+        #expect(natural.maxBoostDB == 1.5)
+        #expect(natural.maxCutDB == 1.0)
+        #expect(streaming.label == "聴きやすく整える")
+        #expect(streaming.maxBoostDB == 3.0)
+        #expect(streaming.maxCutDB == 1.5)
+        #expect(forward.label == "押し出し強め")
+        #expect(forward.maxBoostDB == 4.5)
+        #expect(forward.maxCutDB == 2.0)
+        #expect([natural, streaming, forward].allSatisfy { $0.deadbandDB == 0.5 })
+    }
 }

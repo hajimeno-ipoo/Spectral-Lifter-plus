@@ -126,11 +126,12 @@ struct DiagnosticStageExportTests {
         )
 
         #expect(correctionFiles.count == 11)
-        #expect(masteringFiles.count == 15)
+        #expect(masteringFiles.count == 16)
         #expect(correctionFiles.contains { $0.lastPathComponent.contains("02_correction_denoise") })
         #expect(correctionFiles.contains { $0.lastPathComponent.contains("08_correction_correctionHighPreserve") })
         #expect(masteringFiles.contains { $0.lastPathComponent.contains("08_mastering_highReturnGuard") })
         #expect(masteringFiles.contains { $0.lastPathComponent.contains("09_mastering_noiseReturnGuard") })
+        #expect(masteringFiles.contains { $0.lastPathComponent.contains("15_mastering_finalLoudnessBounds") })
         #expect(report.contains("## 補正工程 前stage差分"))
         #expect(report.contains("## マスタリング工程 前stage差分"))
         #expect(report.contains("Δ8-12kHz"))

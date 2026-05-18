@@ -112,7 +112,43 @@ struct MasteringSettings: Sendable, Equatable {
     var finishingIntensity: Float
 }
 
+struct LoudnessAdjustmentPolicy: Sendable, Equatable {
+    let label: String
+    let maxBoostDB: Double
+    let maxCutDB: Double
+    let deadbandDB: Double
+    let finalRestoreLimitDB: Double
+}
+
 extension MasteringSettings {
+    var loudnessAdjustmentPolicy: LoudnessAdjustmentPolicy {
+        if finishingIntensity <= 0.45 {
+            return LoudnessAdjustmentPolicy(
+                label: "自然",
+                maxBoostDB: 1.5,
+                maxCutDB: 1.0,
+                deadbandDB: 0.5,
+                finalRestoreLimitDB: 1.5
+            )
+        }
+        if finishingIntensity >= 0.70 {
+            return LoudnessAdjustmentPolicy(
+                label: "押し出し強め",
+                maxBoostDB: 4.5,
+                maxCutDB: 2.0,
+                deadbandDB: 0.5,
+                finalRestoreLimitDB: 2.0
+            )
+        }
+        return LoudnessAdjustmentPolicy(
+            label: "聴きやすく整える",
+            maxBoostDB: 3.0,
+            maxCutDB: 1.5,
+            deadbandDB: 0.5,
+            finalRestoreLimitDB: 2.0
+        )
+    }
+
     var aggressiveSettingWarnings: [String] {
         var warnings: [String] = []
         if targetLoudness >= -12 {

@@ -28,6 +28,7 @@ struct RealAudioWorkflowTests {
 
         let correctionLogs = RealAudioLogCollector()
         let masteringLogs = RealAudioLogCollector()
+        let masteringDiagnostics = tempDirectory.appending(path: "mastering-stages")
         let correctedURL = try await AudioProcessingService().process(
             inputFile: excerptURL,
             denoiseStrength: .balanced,
@@ -43,7 +44,8 @@ struct RealAudioWorkflowTests {
             settings: MasteringProfile.streaming.settings,
             referenceNoiseMeasurements: correctedNoise,
             originalReferenceFile: excerptURL,
-            originalReferenceNoiseMeasurements: inputNoise
+            originalReferenceNoiseMeasurements: inputNoise,
+            diagnosticOutputDirectory: masteringDiagnostics
         ) { message in
             masteringLogs.append(message)
         }
@@ -53,6 +55,9 @@ struct RealAudioWorkflowTests {
         let inputMetrics = try AudioComparisonService.analyze(signal: excerptSignal)
         let correctedMetrics = try AudioComparisonService.analyze(signal: correctedSignal)
         let masteredMetrics = try AudioComparisonService.analyze(signal: masteredSignal)
+        let loudnessBaselineMetrics = try AudioComparisonService.analyze(
+            fileURL: realAudioDiagnosticFile(in: masteringDiagnostics, containing: "06_mastering_stereo")
+        )
         let report = providedRealAudioReport(
             sourceURL: sourceURL,
             excerptURL: excerptURL,
@@ -76,7 +81,9 @@ struct RealAudioWorkflowTests {
         #expect(FileManager.default.fileExists(atPath: correctedURL.path(percentEncoded: false)))
         #expect(FileManager.default.fileExists(atPath: masteredURL.path(percentEncoded: false)))
         #expect(FileManager.default.fileExists(atPath: reportURL.path(percentEncoded: false)))
-        #expect((-17.2 ... -15.8).contains(masteredMetrics.integratedLoudnessLUFS))
+        let policy = MasteringProfile.streaming.settings.loudnessAdjustmentPolicy
+        #expect(masteredMetrics.integratedLoudnessLUFS <= loudnessBaselineMetrics.integratedLoudnessLUFS + policy.maxBoostDB + 0.2)
+        #expect(masteredMetrics.integratedLoudnessLUFS >= loudnessBaselineMetrics.integratedLoudnessLUFS - policy.maxCutDB - 0.2)
         #expect(masteredMetrics.truePeakDBFS <= Double(MasteringProfile.streaming.settings.peakCeilingDB) + 0.05)
         expectMetricHighBandsNotDulled(reference: inputMetrics, processed: correctedMetrics)
         expectMetricHighBandsNotDulled(reference: correctedMetrics, processed: masteredMetrics, maxBrillianceDropDB: 1.0, maxAirDropDB: 1.0, maxUltraAirDropDB: 1.0)
@@ -101,6 +108,9 @@ struct RealAudioWorkflowTests {
 
         let inputURL = URL(fileURLWithPath: inputPath)
         let correctedURL = URL(fileURLWithPath: correctedPath)
+        let tempDirectory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        let masteringDiagnostics = tempDirectory.appending(path: "mastering-stages")
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
         guard FileManager.default.fileExists(atPath: inputURL.path(percentEncoded: false)),
               FileManager.default.fileExists(atPath: correctedURL.path(percentEncoded: false))
         else {
@@ -110,11 +120,18 @@ struct RealAudioWorkflowTests {
 
         let input = try AudioFileService.loadAudio(from: inputURL)
         let corrected = try AudioFileService.loadAudio(from: correctedURL)
-        let masteredURL = try await MasteringService().process(inputFile: correctedURL, profile: .streaming) { _ in }
+        let masteredURL = try await MasteringService().process(
+            inputFile: correctedURL,
+            settings: MasteringProfile.streaming.settings,
+            diagnosticOutputDirectory: masteringDiagnostics
+        ) { _ in }
         let mastered = try AudioFileService.loadAudio(from: masteredURL)
         let inputMetrics = try AudioComparisonService.analyze(signal: input)
         let correctedMetrics = try AudioComparisonService.analyze(signal: corrected)
         let masteredMetrics = try AudioComparisonService.analyze(fileURL: masteredURL)
+        let loudnessBaselineMetrics = try AudioComparisonService.analyze(
+            fileURL: realAudioDiagnosticFile(in: masteringDiagnostics, containing: "06_mastering_stereo")
+        )
 
         let report = masteringGoalReport(
             input: input,
@@ -131,7 +148,9 @@ struct RealAudioWorkflowTests {
         #expect(FileManager.default.fileExists(atPath: masteredURL.path(percentEncoded: false)))
         #expect(masteringBandDrop(input: input, mastered: mastered, lower: 5_000, upper: 8_000) >= -2.5)
         expectMetricHighBandsNotDulled(reference: inputMetrics, processed: masteredMetrics)
-        #expect((-17.2 ... -14.0).contains(masteredMetrics.integratedLoudnessLUFS))
+        let policy = MasteringProfile.streaming.settings.loudnessAdjustmentPolicy
+        #expect(masteredMetrics.integratedLoudnessLUFS <= loudnessBaselineMetrics.integratedLoudnessLUFS + policy.maxBoostDB + 0.2)
+        #expect(masteredMetrics.integratedLoudnessLUFS >= loudnessBaselineMetrics.integratedLoudnessLUFS - policy.maxCutDB - 0.2)
         #expect(masteredMetrics.truePeakDBFS <= -1.5)
         #expect(FileManager.default.fileExists(atPath: reportURL.path(percentEncoded: false)))
     }
@@ -389,6 +408,14 @@ private func expectMetricHighBandsNotDulled(
 
 private func band(_ id: String, in metrics: AudioMetricSnapshot) -> Double {
     metrics.bandEnergies.first { $0.id == id }?.levelDB ?? .nan
+}
+
+private func realAudioDiagnosticFile(in directory: URL, containing fragment: String) throws -> URL {
+    let contents = try FileManager.default.contentsOfDirectory(
+        at: directory,
+        includingPropertiesForKeys: nil
+    )
+    return try #require(contents.first { $0.lastPathComponent.contains(fragment) })
 }
 
 private func bandRMSDB(signal: AudioSignal, lower: Double, upper: Double) -> Double {

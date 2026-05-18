@@ -39,8 +39,9 @@ struct MasteringPipelineTests {
         #expect(logs.values.contains { $0.hasPrefix("マスタリング/計測: 最終高域保持: ") && $0.hasSuffix("秒") })
         #expect(logs.values.contains { $0.hasPrefix("マスタリング/計測: 最終音量復帰: ") && $0.hasSuffix("秒") })
         #expect(logs.values.contains { $0.hasPrefix("マスタリング/計測: 最終ノイズ確認: ") && $0.hasSuffix("秒") })
+        #expect(logs.values.contains { $0.hasPrefix("マスタリング/計測: 最終音量上限: ") && $0.hasSuffix("秒") })
         let total = try #require(parsedDuration(prefix: "合計: ", from: logs.values))
-        let stagePrefixes = ["解析: ", "音色: ", "ディエッサー: ", "ダイナミクス: ", "倍音: ", "空気感: ", "広がり: ", "ラウドネス: ", "ノイズ戻りガード: ", "マスタリング/計測: 高域保持: ", "マスタリング/計測: 最終ノイズ上限: ", "マスタリング/計測: 最終高域保持: ", "マスタリング/計測: 最終音量復帰: ", "マスタリング/計測: 最終ノイズ確認: ", "保存: "]
+        let stagePrefixes = ["解析: ", "音色: ", "ディエッサー: ", "ダイナミクス: ", "倍音: ", "空気感: ", "広がり: ", "ラウドネス: ", "ノイズ戻りガード: ", "マスタリング/計測: 高域保持: ", "マスタリング/計測: 最終ノイズ上限: ", "マスタリング/計測: 最終高域保持: ", "マスタリング/計測: 最終音量復帰: ", "マスタリング/計測: 最終ノイズ確認: ", "マスタリング/計測: 最終音量上限: ", "保存: "]
         var summedStages = 0.0
         for prefix in stagePrefixes {
             summedStages += try #require(parsedDuration(prefix: prefix, from: logs.values))
@@ -226,13 +227,18 @@ struct MasteringPipelineTests {
     @Test
     func masteringPreservesAirAndPresenceWithinMusicalGoal() async throws {
         let tempDirectory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        let diagnostics = tempDirectory.appending(path: "mastering-stages")
         try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
         let inputURL = tempDirectory.appending(path: "musical-air-goal.wav")
 
         try makeMusicalAirTone(at: inputURL)
 
         let reference = try AudioFileService.loadAudio(from: inputURL)
-        let output = try await MasteringService().process(inputFile: inputURL, profile: .streaming) { _ in }
+        let output = try await MasteringService().process(
+            inputFile: inputURL,
+            settings: MasteringProfile.streaming.settings,
+            diagnosticOutputDirectory: diagnostics
+        ) { _ in }
         let mastered = try AudioFileService.loadAudio(from: output)
 
         let referencePresence = bandRMSDB(signal: reference, lower: 5_000, upper: 8_000)
@@ -241,36 +247,113 @@ struct MasteringPipelineTests {
         let masteredRoom = bandRMSDB(signal: mastered, lower: 300, upper: 3_000)
         let referenceMetrics = try AudioComparisonService.analyze(fileURL: inputURL)
         let masteredMetrics = try AudioComparisonService.analyze(fileURL: output)
+        let baselineMetrics = try masteringLoudnessBaselineMetrics(in: diagnostics)
+        let policy = MasteringProfile.streaming.settings.loudnessAdjustmentPolicy
 
         #expect(FileManager.default.fileExists(atPath: output.path()))
         #expect(masteredPresence >= referencePresence - 2.0)
         expectHighBandsNotDulled(reference: reference, processed: mastered)
         #expect(masteredRoom - masteredMetrics.rmsDBFS <= referenceRoom - referenceMetrics.rmsDBFS + 1.2)
-        #expect((-18.2 ... -14.0).contains(masteredMetrics.integratedLoudnessLUFS))
+        #expect(masteredMetrics.integratedLoudnessLUFS <= baselineMetrics.integratedLoudnessLUFS + policy.maxBoostDB + 0.2)
+        #expect(masteredMetrics.integratedLoudnessLUFS >= baselineMetrics.integratedLoudnessLUFS - policy.maxCutDB - 0.2)
         #expect(masteredMetrics.truePeakDBFS <= -1.5)
     }
 
     @Test
     func masteringRestoresFinalLoudnessAfterNoiseGuards() async throws {
         let tempDirectory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        let diagnostics = tempDirectory.appending(path: "mastering-stages")
         try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
         let inputURL = tempDirectory.appending(path: "final-loudness-restore.wav")
         let logs = MasteringLogCollector()
 
         try makeMusicalAirTone(at: inputURL)
 
-        let output = try await MasteringService().process(inputFile: inputURL, profile: .streaming) { message in
+        let output = try await MasteringService().process(
+            inputFile: inputURL,
+            settings: MasteringProfile.streaming.settings,
+            diagnosticOutputDirectory: diagnostics
+        ) { message in
             logs.append(message)
         }
         let masteredMetrics = try AudioComparisonService.analyze(fileURL: output)
+        let baselineMetrics = try masteringLoudnessBaselineMetrics(in: diagnostics)
+        let policy = MasteringProfile.streaming.settings.loudnessAdjustmentPolicy
 
         #expect(FileManager.default.fileExists(atPath: output.path()))
-        #expect(masteredMetrics.integratedLoudnessLUFS >= Double(MasteringProfile.streaming.settings.targetLoudness) - 1.2)
+        #expect(masteredMetrics.integratedLoudnessLUFS <= baselineMetrics.integratedLoudnessLUFS + policy.maxBoostDB + 0.2)
+        #expect(masteredMetrics.integratedLoudnessLUFS >= baselineMetrics.integratedLoudnessLUFS - policy.maxCutDB - 0.2)
         #expect(masteredMetrics.truePeakDBFS <= Double(MasteringProfile.streaming.settings.peakCeilingDB) + 0.05)
         #expect(
             logs.values.contains { $0.hasPrefix("最終音量復帰: ") }
-                || masteredMetrics.integratedLoudnessLUFS >= Double(MasteringProfile.streaming.settings.targetLoudness) - 0.6
+                || logs.values.contains { $0.hasPrefix("ラウドネス方針: 聴きやすく整える") }
         )
+    }
+
+    @Test
+    func masteringLimitsLoudnessBoostByProfilePolicy() async throws {
+        let tempDirectory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        let diagnostics = tempDirectory.appending(path: "mastering-stages")
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        let inputURL = tempDirectory.appending(path: "quiet-policy-check.wav")
+        let logs = MasteringLogCollector()
+
+        try makeTestTone(at: inputURL)
+        var quiet = try AudioFileService.loadAudio(from: inputURL)
+        quiet = AudioSignal(
+            channels: quiet.channels.map { channel in channel.map { $0 * 0.08 } },
+            sampleRate: quiet.sampleRate
+        )
+        try AudioFileService.saveAudio(quiet, to: inputURL)
+
+        var settings = MasteringProfile.streaming.settings
+        settings.targetLoudness = -9.0
+        let output = try await MasteringService().process(
+            inputFile: inputURL,
+            settings: settings,
+            diagnosticOutputDirectory: diagnostics
+        ) { message in
+            logs.append(message)
+        }
+        let after = try AudioComparisonService.analyze(fileURL: output)
+        let baseline = try masteringLoudnessBaselineMetrics(in: diagnostics)
+        let policy = settings.loudnessAdjustmentPolicy
+
+        #expect(FileManager.default.fileExists(atPath: output.path()))
+        #expect(after.integratedLoudnessLUFS <= baseline.integratedLoudnessLUFS + policy.maxBoostDB + 0.2)
+        #expect(after.truePeakDBFS <= Double(settings.peakCeilingDB) + 0.05)
+        #expect(logs.values.contains { $0.hasPrefix("ラウドネス方針: 聴きやすく整える") })
+        #expect(logs.values.contains { $0.hasPrefix("最終音量上限: ") })
+    }
+
+    @Test
+    func masteringLimitsLoudnessCutByProfilePolicy() async throws {
+        let tempDirectory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        let diagnostics = tempDirectory.appending(path: "mastering-stages")
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        let inputURL = tempDirectory.appending(path: "hot-policy-check.wav")
+        let logs = MasteringLogCollector()
+
+        try makeHotTransientTone(at: inputURL)
+
+        var settings = MasteringProfile.streaming.settings
+        settings.targetLoudness = -40.0
+        let output = try await MasteringService().process(
+            inputFile: inputURL,
+            settings: settings,
+            diagnosticOutputDirectory: diagnostics
+        ) { message in
+            logs.append(message)
+        }
+        let after = try AudioComparisonService.analyze(fileURL: output)
+        let baseline = try masteringLoudnessBaselineMetrics(in: diagnostics)
+        let policy = settings.loudnessAdjustmentPolicy
+
+        #expect(FileManager.default.fileExists(atPath: output.path()))
+        #expect(after.integratedLoudnessLUFS >= baseline.integratedLoudnessLUFS - policy.maxCutDB - 0.2)
+        #expect(after.truePeakDBFS <= Double(settings.peakCeilingDB) + 0.05)
+        #expect(logs.values.contains { $0.hasPrefix("ラウドネス方針: 聴きやすく整える") })
+        #expect(logs.values.contains { $0.hasPrefix("最終音量上限: ") || $0.hasPrefix("最終音量下限: ") })
     }
 
     @Test
@@ -573,6 +656,10 @@ private func diagnosticFile(in directory: URL, containing fragment: String) thro
         includingPropertiesForKeys: nil
     )
     return try #require(contents.first { $0.lastPathComponent.contains(fragment) })
+}
+
+private func masteringLoudnessBaselineMetrics(in directory: URL) throws -> AudioMetricSnapshot {
+    try AudioComparisonService.analyze(fileURL: diagnosticFile(in: directory, containing: "06_mastering_stereo"))
 }
 
 private func bandRMSDB(signal: AudioSignal, lower: Double, upper: Double) -> Double {
