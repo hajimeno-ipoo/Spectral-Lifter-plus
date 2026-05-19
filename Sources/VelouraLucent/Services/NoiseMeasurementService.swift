@@ -59,10 +59,11 @@ enum NoiseMeasurementService {
 
     private static func measure(mono: [Float], sampleRate: Double, ids requestedIDs: Set<String>) -> [String: Double] {
         var measured: [String: Double] = [:]
+        var quietFloorContext = QuietFloorContext(reference: mono, sampleRate: sampleRate)
 
         if requestedIDs.contains(NoiseMeasurementID.hiss) {
             let high = bandPass(mono, lower: 8_000, upper: min(20_000, sampleRate * 0.5 - 100), sampleRate: sampleRate)
-            measured[NoiseMeasurementID.hiss] = quietBandNoiseFloorDB(band: high, reference: mono, sampleRate: sampleRate)
+            measured[NoiseMeasurementID.hiss] = quietFloorContext.quietBandNoiseFloorDB(band: high)
         }
 
         if requestedIDs.contains(NoiseMeasurementID.sibilance) {
@@ -72,7 +73,7 @@ enum NoiseMeasurementService {
 
         if requestedIDs.contains(NoiseMeasurementID.shimmer) {
             let shimmer = bandPass(mono, lower: 10_000, upper: min(16_000, sampleRate * 0.5 - 100), sampleRate: sampleRate)
-            measured[NoiseMeasurementID.shimmer] = quietBandNoiseFloorDB(band: shimmer, reference: mono, sampleRate: sampleRate)
+            measured[NoiseMeasurementID.shimmer] = quietFloorContext.quietBandNoiseFloorDB(band: shimmer)
         }
 
         if requestedIDs.contains(NoiseMeasurementID.mud) {
@@ -87,15 +88,48 @@ enum NoiseMeasurementService {
 
         if requestedIDs.contains(NoiseMeasurementID.rumble) {
             let low = bandPass(mono, lower: 20, upper: 150, sampleRate: sampleRate)
-            measured[NoiseMeasurementID.rumble] = quietBandNoiseFloorDB(band: low, reference: mono, sampleRate: sampleRate)
+            measured[NoiseMeasurementID.rumble] = quietFloorContext.quietBandNoiseFloorDB(band: low)
         }
 
         if requestedIDs.contains(NoiseMeasurementID.room) {
             let room = bandPass(mono, lower: 100, upper: min(8_000, sampleRate * 0.5 - 100), sampleRate: sampleRate)
-            measured[NoiseMeasurementID.room] = quietBandNoiseFloorDB(band: room, reference: mono, sampleRate: sampleRate)
+            measured[NoiseMeasurementID.room] = quietFloorContext.quietBandNoiseFloorDB(band: room)
         }
 
         return measured
+    }
+
+    private struct QuietFloorContext {
+        let reference: [Float]
+        let sampleRate: Double
+        private var referenceFrames: [Double]?
+
+        init(reference: [Float], sampleRate: Double) {
+            self.reference = reference
+            self.sampleRate = sampleRate
+            referenceFrames = nil
+        }
+
+        mutating func quietBandNoiseFloorDB(band: [Float]) -> Double {
+            let frameSize = max(512, Int(sampleRate * 0.100))
+            let hopSize = max(256, Int(sampleRate * 0.050))
+            let referenceFrames = cachedReferenceFrames(frameSize: frameSize, hopSize: hopSize)
+            return NoiseMeasurementService.quietBandNoiseFloorDB(
+                band: band,
+                referenceFrames: referenceFrames,
+                frameSize: frameSize,
+                hopSize: hopSize
+            )
+        }
+
+        private mutating func cachedReferenceFrames(frameSize: Int, hopSize: Int) -> [Double] {
+            if let referenceFrames {
+                return referenceFrames
+            }
+            let frames = NoiseMeasurementService.frameRMS(reference, frameSize: frameSize, hopSize: hopSize)
+            referenceFrames = frames
+            return frames
+        }
     }
 
     private static func bandPass(_ samples: [Float], lower: Double, upper: Double, sampleRate: Double) -> [Float] {
@@ -112,6 +146,15 @@ enum NoiseMeasurementService {
         let frameSize = max(512, Int(sampleRate * 0.100))
         let hopSize = max(256, Int(sampleRate * 0.050))
         let referenceFrames = frameRMS(reference, frameSize: frameSize, hopSize: hopSize)
+        return quietBandNoiseFloorDB(
+            band: band,
+            referenceFrames: referenceFrames,
+            frameSize: frameSize,
+            hopSize: hopSize
+        )
+    }
+
+    private static func quietBandNoiseFloorDB(band: [Float], referenceFrames: [Double], frameSize: Int, hopSize: Int) -> Double {
         let bandFrames = frameRMS(band, frameSize: frameSize, hopSize: hopSize)
         guard !referenceFrames.isEmpty, referenceFrames.count == bandFrames.count else {
             return rmsDB(band)
