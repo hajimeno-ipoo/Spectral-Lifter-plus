@@ -301,9 +301,50 @@ enum SpectralDSP {
 
     static func percentile(_ values: [Float], _ percentile: Float) -> Float {
         guard !values.isEmpty else { return 0 }
-        let sorted = values.sorted()
-        let position = min(max(Int(Float(sorted.count - 1) * percentile / 100), 0), sorted.count - 1)
-        return sorted[position]
+        let position = min(max(Int(Float(values.count - 1) * percentile / 100), 0), values.count - 1)
+        return selectKth(values, position)
+    }
+
+    private static func selectKth(_ values: [Float], _ kth: Int) -> Float {
+        var values = values
+        var left = values.startIndex
+        var right = values.index(before: values.endIndex)
+
+        while left < right {
+            let equalRange = partitionEqualRange(&values, left: left, right: right, pivotIndex: (left + right) / 2)
+            if equalRange.contains(kth) {
+                return values[kth]
+            }
+            if kth < equalRange.lowerBound {
+                right = values.index(before: equalRange.lowerBound)
+            } else {
+                left = values.index(after: equalRange.upperBound)
+            }
+        }
+
+        return values[left]
+    }
+
+    private static func partitionEqualRange(_ values: inout [Float], left: Int, right: Int, pivotIndex: Int) -> ClosedRange<Int> {
+        let pivotValue = values[pivotIndex]
+        var lower = left
+        var index = left
+        var upper = right
+
+        while index <= upper {
+            if values[index] < pivotValue {
+                values.swapAt(lower, index)
+                lower += 1
+                index += 1
+            } else if values[index] > pivotValue {
+                values.swapAt(index, upper)
+                upper -= 1
+            } else {
+                index += 1
+            }
+        }
+
+        return lower...upper
     }
 
     static func movingAverage(_ values: [Float], windowSize: Int) -> [Float] {
