@@ -32,7 +32,7 @@ struct CorrectionSettingsPanel: View {
                     Text(job.selectedDenoiseStrength.summary)
                         .foregroundStyle(.secondary)
                     Text(job.isUsingCustomCorrectionSettings ? "詳細設定を調整中です" : "プリセットの既定値を使用しています")
-                        .font(.caption)
+                        .font(.callout)
                         .foregroundStyle(job.isUsingCustomCorrectionSettings ? .orange : .secondary)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -46,7 +46,7 @@ struct CorrectionSettingsPanel: View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
                 Text("プリセットを基準に、補正の効き方を細かく調整します。")
-                    .font(.caption)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
                 Spacer()
                 Button("プリセットへ戻す") {
@@ -193,7 +193,7 @@ struct CorrectionSettingsPanel: View {
                 Text(title)
                     .font(.headline)
                 Text(summary)
-                    .font(.caption)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
             }
             content()
@@ -269,7 +269,7 @@ struct CorrectionSettingsPanel: View {
         HStack {
             ForEach(Array(labels.enumerated()), id: \.offset) { _, label in
                 Text(label)
-                    .font(.caption2)
+                    .font(.callout.weight(.medium))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: alignment(forScaleLabel: label, in: labels))
             }
@@ -350,7 +350,7 @@ private struct CorrectionTermHelpButton: View {
             isPresented.toggle()
         }
         .labelStyle(.iconOnly)
-        .font(.caption)
+        .font(.callout)
         .foregroundStyle(.secondary)
         .buttonStyle(.plain)
         .popover(isPresented: $isPresented, arrowEdge: .bottom) {
@@ -358,7 +358,7 @@ private struct CorrectionTermHelpButton: View {
                 Text(title)
                     .font(.headline)
                 Text(reading)
-                    .font(.caption)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
                 Text(description)
                     .font(.subheadline)

@@ -27,7 +27,7 @@ struct DetailedSettingsPanel: View {
                     Text("詳細設定")
                         .font(.headline)
                     Text("補正とマスタリングを切り替えて、必要な項目だけ調整します。")
-                        .font(.caption)
+                        .font(.callout)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
