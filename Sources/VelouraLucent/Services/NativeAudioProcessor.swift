@@ -1755,6 +1755,21 @@ private struct SpectralGateDenoiser: Sendable {
             shimmerEnergy: shimmerEnergy,
             maximum: tuning.exceptionRelaxation
         )
+        var frequencyByBin = Array(repeating: 0.0, count: binCount)
+        var thresholdByBin = Array(repeating: Float.zero, count: binCount)
+        var baseFloorByBin = Array(repeating: Float.zero, count: binCount)
+        var granularThresholdByBin = Array(repeating: Float.zero, count: binCount)
+        var highBandWeightByBin = Array(repeating: Float.zero, count: binCount)
+        var transientLiftScaleByBin = Array(repeating: Float.zero, count: binCount)
+        for binIndex in 0..<binCount {
+            let frequency = Double(binIndex) * frequencyStep
+            frequencyByBin[binIndex] = frequency
+            thresholdByBin[binIndex] = noiseProfile[binIndex] * tuning.thresholdMultiplier * coefficients.thresholdScale[binIndex]
+            baseFloorByBin[binIndex] = coefficients.floor[binIndex]
+            granularThresholdByBin[binIndex] = granularProfile[binIndex] * coefficients.granularThresholdScale[binIndex]
+            highBandWeightByBin[binIndex] = min(1, max(0, Float((frequency - 8_000) / 8_000)))
+            transientLiftScaleByBin[binIndex] = Self.transientProtectionLiftScale(frequency: frequency)
+        }
 
         for frameIndex in 0..<spectrogram.frameCount {
             let transientRatio = frameEnergy[frameIndex] / max(smoothedFrameEnergy[frameIndex], 1e-6)
@@ -1764,8 +1779,8 @@ private struct SpectralGateDenoiser: Sendable {
             for binIndex in 0..<binCount {
                 let index = frameStart + binIndex
                 let magnitude = hypotf(spectrogram.real[index], spectrogram.imag[index])
-                let threshold = noiseProfile[binIndex] * tuning.thresholdMultiplier * coefficients.thresholdScale[binIndex]
-                let baseFloor = coefficients.floor[binIndex]
+                let threshold = thresholdByBin[binIndex]
+                let baseFloor = baseFloorByBin[binIndex]
                 let granularActivity: Float
                 if frameIndex > 0 {
                     let previousIndex = previousFrameStart + binIndex
@@ -1774,9 +1789,9 @@ private struct SpectralGateDenoiser: Sendable {
                 } else {
                     granularActivity = 0
                 }
-                let granularThreshold = granularProfile[binIndex] * coefficients.granularThresholdScale[binIndex]
+                let granularThreshold = granularThresholdByBin[binIndex]
                 let granularExcess = max(0, granularActivity - granularThreshold)
-                let frequency = Double(binIndex) * frequencyStep
+                let frequency = frequencyByBin[binIndex]
                 let floor = DenoiseMaskCoefficients.protectedFloor(
                     baseFloor: baseFloor,
                     frequency: frequency,
@@ -1803,10 +1818,10 @@ private struct SpectralGateDenoiser: Sendable {
                     magnitude: magnitude,
                     shimmerStartBin: shimmerStartBin,
                     shimmerEndBin: shimmerEndBin,
-                    transientLift: transientProtectionLift(frameLift: frameTransientLift, frequency: frequency),
+                    transientLift: frameTransientLift * transientLiftScaleByBin[binIndex],
                     exceptionRelaxation: shimmerExceptionRelaxation
                 )
-                let highBandWeight = min(1, max(0, Float((frequency - 8_000) / 8_000)))
+                let highBandWeight = highBandWeightByBin[binIndex]
                 let highProtectionWeight = min(1, highFloorLift / 0.30)
                 let nonTonalHighReduction = highBandWeight * (1 - highProtectionWeight) * 0.03
                 let nonTonalAwareRawMask = max(floor, rawMask - nonTonalHighReduction)
@@ -1815,7 +1830,7 @@ private struct SpectralGateDenoiser: Sendable {
                 let mask = min(
                     1.0,
                     max(floor, min(combinedNoiseMask, shimmerMask))
-                        + transientProtectionLift(frameLift: frameTransientLift, frequency: frequency)
+                        + frameTransientLift * transientLiftScaleByBin[binIndex]
                 )
                 if !maskBreakdowns.isEmpty {
                     for breakdownIndex in maskBreakdowns.indices where maskBreakdowns[breakdownIndex].contains(frequency) {
@@ -1843,14 +1858,18 @@ private struct SpectralGateDenoiser: Sendable {
     }
 
     private func transientProtectionLift(frameLift: Float, frequency: Double) -> Float {
+        frameLift * Self.transientProtectionLiftScale(frequency: frequency)
+    }
+
+    private static func transientProtectionLiftScale(frequency: Double) -> Float {
         if frequency < 5_000 {
-            return frameLift
+            return 1
         }
         if frequency < 10_000 {
-            return frameLift * 0.5
+            return 0.5
         }
         if frequency < 16_000 {
-            return frameLift * 0.2
+            return 0.2
         }
         return 0
     }
