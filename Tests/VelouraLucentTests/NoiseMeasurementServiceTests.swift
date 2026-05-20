@@ -98,13 +98,37 @@ struct NoiseMeasurementServiceTests {
         }
     }
 
+    @Test
+    func cancellableMeasurementStopsWhenTaskIsCancelled() async {
+        let signal = testSignal(duration: 8) { time in
+            let tone = sin(2 * Double.pi * 440 * time) * 0.08
+            let hiss = sin(2 * Double.pi * 12_000 * time) * 0.006
+            let rumble = sin(2 * Double.pi * 80 * time) * 0.02
+            return Float(tone + hiss + rumble)
+        }
+        let task = Task.detached(priority: .utility) {
+            try NoiseMeasurementService.analyzeCancellable(signal: signal)
+        }
+
+        task.cancel()
+
+        do {
+            _ = try await task.value
+            Issue.record("キャンセル済みのノイズ測定は完了せず CancellationError を返す必要があります")
+        } catch is CancellationError {
+            return
+        } catch {
+            Issue.record("Unexpected cancellation error: \(error)")
+        }
+    }
+
     private func value(_ id: String, in snapshot: NoiseMeasurementSnapshot) -> Double {
         snapshot.value(for: id)?.comparableLevelDB ?? -120
     }
 
-    private func testSignal(_ sample: (Double) -> Float) -> AudioSignal {
+    private func testSignal(duration: Double = 2, _ sample: (Double) -> Float) -> AudioSignal {
         let sampleRate = 48_000.0
-        let frameCount = Int(sampleRate * 2)
+        let frameCount = Int(sampleRate * duration)
         let channel = (0..<frameCount).map { index in
             sample(Double(index) / sampleRate)
         }

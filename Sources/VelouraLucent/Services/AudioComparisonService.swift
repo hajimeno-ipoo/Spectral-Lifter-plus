@@ -25,34 +25,63 @@ enum AudioComparisonService {
     }
 
     static func analyzeConcurrently(signal: AudioSignal) async throws -> AudioMetricSnapshot {
+        try Task.checkCancellation()
         let mono = signal.monoMixdown()
         guard !mono.isEmpty else {
             return emptySnapshot()
         }
 
         let loudnessTask = Task.detached(priority: .utility) {
-            LoudnessMeasurementService.measure(signal: signal)
+            try Task.checkCancellation()
+            let measurement = LoudnessMeasurementService.measure(signal: signal)
+            try Task.checkCancellation()
+            return measurement
         }
         let waveformTask = Task.detached(priority: .utility) {
-            let loudness = await loudnessTask.value
+            try Task.checkCancellation()
+            let loudness = try await loudnessTask.value
+            try Task.checkCancellation()
             return Self.waveformMetrics(for: mono, sampleRate: signal.sampleRate, loudness: loudness)
         }
         let channelTask = Task.detached(priority: .utility) {
-            let loudness = await loudnessTask.value
+            try Task.checkCancellation()
+            let loudness = try await loudnessTask.value
+            try Task.checkCancellation()
             return Self.channelMetrics(for: signal, loudness: loudness)
         }
         let frequencyTask = Task.detached(priority: .utility) {
-            try Self.frequencyMetrics(for: mono, sampleRate: signal.sampleRate)
+            try Task.checkCancellation()
+            let metrics = try Self.frequencyMetrics(for: mono, sampleRate: signal.sampleRate) {
+                try Task.checkCancellation()
+            }
+            try Task.checkCancellation()
+            return metrics
         }
 
-        let waveformResult = await waveformTask.value
-        let channelResult = await channelTask.value
-        let frequencyResult = try await frequencyTask.value
-        return snapshot(
-            waveformMetrics: waveformResult,
-            channelMetrics: channelResult,
-            frequencyMetrics: frequencyResult
-        )
+        let cancelTasks: @Sendable () -> Void = {
+            loudnessTask.cancel()
+            waveformTask.cancel()
+            channelTask.cancel()
+            frequencyTask.cancel()
+        }
+
+        return try await withTaskCancellationHandler {
+            do {
+                let waveformResult = try await waveformTask.value
+                let channelResult = try await channelTask.value
+                let frequencyResult = try await frequencyTask.value
+                return snapshot(
+                    waveformMetrics: waveformResult,
+                    channelMetrics: channelResult,
+                    frequencyMetrics: frequencyResult
+                )
+            } catch {
+                cancelTasks()
+                throw error
+            }
+        } onCancel: {
+            cancelTasks()
+        }
     }
 
     private static func emptySnapshot() -> AudioMetricSnapshot {
@@ -109,7 +138,12 @@ enum AudioComparisonService {
         )
     }
 
-    private static func frequencyMetrics(for mono: [Float], sampleRate: Double) throws -> FrequencyMetrics {
+    private static func frequencyMetrics(
+        for mono: [Float],
+        sampleRate: Double,
+        cancellationCheck: () throws -> Void = {}
+    ) throws -> FrequencyMetrics {
+        try cancellationCheck()
         let frameSize = 16_384
         let hopSize = 8_192
         let window = vDSP.window(ofType: Float.self, usingSequence: .hanningDenormalized, count: frameSize, isHalfWindow: false)
@@ -147,6 +181,7 @@ enum AudioComparisonService {
         var spectrumEnergySum = Array(repeating: 0.0, count: spectrumBands.count)
 
         if mono.count < frameSize {
+            try cancellationCheck()
             let padded = mono + Array(repeating: Float.zero, count: frameSize - mono.count)
             accumulateMetrics(
                 frame: padded,
@@ -174,7 +209,11 @@ enum AudioComparisonService {
             )
         } else {
             var start = 0
+            var frameIndex = 0
             while start + frameSize <= mono.count {
+                if frameIndex.isMultiple(of: 8) {
+                    try cancellationCheck()
+                }
                 let frame = Array(mono[start..<(start + frameSize)])
                 accumulateMetrics(
                     frame: frame,
@@ -201,8 +240,10 @@ enum AudioComparisonService {
                     spectrumEnergySum: &spectrumEnergySum
                 )
                 start += hopSize
+                frameIndex += 1
             }
         }
+        try cancellationCheck()
 
         let safeFrameCount = Double(max(frameCount, 1))
         let bandMetrics = zip(bandTemplate, bandEnergySum).map { template, value in

@@ -7,6 +7,7 @@ struct ContentView: View {
     @State private var job = ProcessingJob()
     @State private var preview = AudioPreviewController()
     @State private var inputSelectionID = UUID()
+    @State private var displayAnalysisTasks: [DisplayAnalysisTarget: Task<Void, Never>] = [:]
 
     private let comparisonCardColumns = [
         GridItem(.flexible(), spacing: 14),
@@ -41,6 +42,7 @@ struct ContentView: View {
             job.applyMasteringProfile(newValue)
         }
         .onDisappear {
+            cancelDisplayAnalysisTasks()
             PreviewFileStore.removeAllPreviewFiles()
         }
     }
@@ -70,7 +72,7 @@ struct ContentView: View {
                         analyzeMetrics(for: url, target: .input, selectionID: selectionID)
                     }
                 }
-                .disabled(job.isProcessing || job.isMastering || job.isAnalyzingMetrics)
+                .disabled(job.isProcessing || job.isMastering)
             }
         }
     }
@@ -123,7 +125,7 @@ struct ContentView: View {
                 previewDisabled: !job.hasExistingOutput || job.isProcessing,
                 statusText: job.statusMessage,
                 statusColor: correctionStatusColor,
-                captionText: job.isAnalyzingMetrics ? "比較を更新中" : "ノイズ除去は「\(job.selectedDenoiseStrength.title)」です"
+                captionText: job.displayAnalysisStatusText ?? "ノイズ除去は「\(job.selectedDenoiseStrength.title)」です"
             )
         }
     }
@@ -163,7 +165,7 @@ struct ContentView: View {
             actionButtonRow(
                 primaryTitle: job.isMastering ? "マスタリング中..." : "マスタリングを実行",
                 onPrimary: startMasteringProcessing,
-                primaryDisabled: !job.hasExistingOutput || job.isMastering || job.isProcessing,
+                primaryDisabled: !canStartMastering,
                 exportTitle: "最終版を書き出し",
                 onExport: exportMasteredAudio,
                 exportDisabled: !job.hasExistingMasteredOutput || job.isMastering,
@@ -175,9 +177,23 @@ struct ContentView: View {
                 previewDisabled: !job.hasExistingMasteredOutput || job.isMastering,
                 statusText: job.masteringStatusMessage,
                 statusColor: masteringStatusColor,
-                captionText: job.isUsingCustomMasteringSettings ? "詳細設定を反映します" : job.selectedMasteringProfile.summary
+                captionText: masteringCaptionText
             )
         }
+    }
+
+    private var canStartMastering: Bool {
+        job.hasExistingOutput
+            && job.canUseCorrectedAnalysisForMastering
+            && !job.isMastering
+            && !job.isProcessing
+    }
+
+    private var masteringCaptionText: String {
+        if job.hasExistingOutput && !job.canUseCorrectedAnalysisForMastering {
+            return "補正後の解析が完了すると実行できます"
+        }
+        return job.isUsingCustomMasteringSettings ? "詳細設定を反映します" : job.selectedMasteringProfile.summary
     }
 
     private func actionButtonRow(
@@ -321,10 +337,20 @@ struct ContentView: View {
                 Text("数値と視覚比較")
                     .font(.headline)
                 Spacer()
-                if job.isAnalyzingMetrics {
+                if job.isAnalyzingDisplayAnalysis {
                     ProgressView()
                         .controlSize(.small)
                 }
+            }
+            if let statusText = job.displayAnalysisStatusText {
+                Text(statusText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if let failedText = job.failedDisplayAnalysisText {
+                Text(failedText)
+                    .font(.caption)
+                    .foregroundStyle(.red)
             }
 
             if let inputMetrics = job.inputMetrics {
@@ -2042,6 +2068,7 @@ struct ContentView: View {
         let appliedSettings = job.editableCorrectionSettings
         let resolvedAnalysisMode = job.selectedAnalysisMode.resolvedMode
         let initialAnalysis = job.inputCorrectionAnalysisMode == resolvedAnalysisMode ? job.inputCorrectionAnalysis : nil
+        cancelDisplayAnalysisTasks(for: [.corrected, .mastered])
         job.beginProcessing(appliedSettings: appliedSettings)
 
         Task {
@@ -2059,39 +2086,36 @@ struct ContentView: View {
                     }
                 }
 
-                let correctedArtifacts = try await makeAudioAnalysisArtifacts(for: outputFile) { message in
-                    Task { @MainActor in
-                        job.appendLog(message)
-                    }
-                }
-
-                await MainActor.run {
-                    guard isCurrentInputSelection(selectionID, inputFile: inputFile) else { return }
+                let shouldStartCorrectedAnalysis = await MainActor.run {
+                    guard isCurrentInputSelection(selectionID, inputFile: inputFile) else { return false }
                     job.finishSuccess(outputFile, appliedSettings: appliedSettings)
                     preview.preparePreview(for: job.inputFile, target: .input, measureLoudness: false)
                     if let inputMetrics = job.inputMetrics {
                         preview.setIntegratedLoudnessLUFS(inputMetrics.integratedLoudnessLUFS, for: .input)
                     }
-                    if let previewSnapshot = correctedArtifacts.previewSnapshot {
-                        preview.setPreviewSnapshot(
-                            previewSnapshot,
-                            for: .corrected,
-                            sourceURL: outputFile,
-                            integratedLoudnessLUFS: correctedArtifacts.metrics.integratedLoudnessLUFS
-                        )
-                    }
                     preview.preparePreview(for: nil, target: .mastered)
-                    job.finishOutputMetricAnalysis(correctedArtifacts.metrics)
-                    if let masteringAnalysis = correctedArtifacts.masteringAnalysis {
-                        job.finishOutputMasteringAnalysis(masteringAnalysis)
-                    }
-                    job.finishOutputNoiseMeasurement(correctedArtifacts.noiseMeasurements)
-                    job.finishOutputSpectrogram(correctedArtifacts.spectrogram)
+                    return true
+                }
+                guard shouldStartCorrectedAnalysis else { return }
+                await MainActor.run {
+                    startDisplayAnalysisTask(
+                        for: outputFile,
+                        target: .corrected,
+                        selectionID: selectionID,
+                        includePreview: true,
+                        includeMasteringAnalysis: true,
+                        correctionAnalysisMode: nil,
+                        logHandler: { message in
+                            Task { @MainActor in
+                                job.appendLog(message)
+                            }
+                        }
+                    )
                 }
             } catch {
                 await MainActor.run {
                     guard isCurrentInputSelection(selectionID, inputFile: inputFile) else { return }
-                    job.failMetricAnalysis()
+                    job.resetDisplayAnalysisStates(for: .corrected)
                     job.finishFailure(error.localizedDescription)
                 }
             }
@@ -2100,8 +2124,10 @@ struct ContentView: View {
 
     private func startMasteringProcessing() {
         guard let correctedFile = job.outputFile else { return }
+        guard canStartMastering else { return }
         let selectionID = inputSelectionID
         let appliedSettings = job.editableMasteringSettings
+        cancelDisplayAnalysisTasks(for: [.mastered])
         job.beginMastering(appliedSettings: appliedSettings)
 
         Task {
@@ -2119,41 +2145,35 @@ struct ContentView: View {
                     }
                 }
 
-                let masteredArtifacts = try await makeAudioAnalysisArtifacts(for: masteredFile, includeMasteringAnalysis: false) { message in
-                    Task { @MainActor in
-                        job.appendMasteringLog(message)
-                    }
-                }
-
-                await MainActor.run {
-                    guard isCurrentMasteringSelection(selectionID, correctedFile: correctedFile) else { return }
+                let shouldStartMasteredAnalysis = await MainActor.run {
+                    guard isCurrentMasteringSelection(selectionID, correctedFile: correctedFile) else { return false }
                     job.finishMasteringSuccess(masteredFile, appliedSettings: appliedSettings)
-                    if let previewSnapshot = masteredArtifacts.previewSnapshot {
-                        preview.setPreviewSnapshot(
-                            previewSnapshot,
-                            for: .mastered,
-                            sourceURL: masteredFile,
-                            integratedLoudnessLUFS: masteredArtifacts.metrics.integratedLoudnessLUFS
-                        )
-                    }
-                    job.finishMasteredMetricAnalysis(masteredArtifacts.metrics)
-                    job.finishMasteredNoiseMeasurement(masteredArtifacts.noiseMeasurements)
-                    job.finishMasteredSpectrogram(masteredArtifacts.spectrogram)
+                    return true
+                }
+                guard shouldStartMasteredAnalysis else { return }
+                await MainActor.run {
+                    startDisplayAnalysisTask(
+                        for: masteredFile,
+                        target: .mastered,
+                        selectionID: selectionID,
+                        includePreview: true,
+                        includeMasteringAnalysis: false,
+                        correctionAnalysisMode: nil,
+                        logHandler: { message in
+                            Task { @MainActor in
+                                job.appendMasteringLog(message)
+                            }
+                        }
+                    )
                 }
             } catch {
                 await MainActor.run {
                     guard isCurrentMasteringSelection(selectionID, correctedFile: correctedFile) else { return }
-                    job.failMetricAnalysis()
+                    job.resetDisplayAnalysisStates(for: .mastered)
                     job.finishMasteringFailure(error.localizedDescription)
                 }
             }
         }
-    }
-
-    private enum MetricTarget {
-        case input
-        case corrected
-        case mastered
     }
 
     private enum MetricFormat {
@@ -2166,121 +2186,223 @@ struct ContentView: View {
         case score(Int)
     }
 
-    private struct AudioAnalysisArtifacts: Sendable {
-        let previewSnapshot: AudioPreviewSnapshot?
-        let metrics: AudioMetricSnapshot
-        let masteringAnalysis: MasteringAnalysis?
-        let correctionAnalysis: AnalysisData?
-        let correctionAnalysisMode: AudioAnalysisMode?
-        let noiseMeasurements: NoiseMeasurementSnapshot
-        let spectrogram: SpectrogramSnapshot
-    }
-
-    private func analyzeMetrics(for url: URL, target: MetricTarget, selectionID: UUID) {
-        guard !hasCachedAnalysis(for: target, fileURL: url) else { return }
-        job.beginMetricAnalysis()
-
-        Task {
-            do {
-                let artifacts = try await makeAnalysisArtifacts(
-                    for: url,
-                    includePreview: false,
-                    includeMasteringAnalysis: target == .corrected,
-                    correctionAnalysisMode: target == .input ? job.selectedAnalysisMode.resolvedMode : nil,
-                    logHandler: displayAnalysisLogHandler(for: target)
-                )
-
-                await MainActor.run {
-                    guard isCurrentMetricSelection(target: target, selectionID: selectionID, fileURL: url) else { return }
-                    switch target {
-                    case .input:
-                        job.finishInputMetricAnalysis(artifacts.metrics)
-                        preview.setIntegratedLoudnessLUFS(artifacts.metrics.integratedLoudnessLUFS, for: .input)
-                        if let analysis = artifacts.correctionAnalysis, let mode = artifacts.correctionAnalysisMode {
-                            job.finishInputCorrectionAnalysis(analysis, mode: mode)
-                        }
-                        job.finishInputNoiseMeasurement(artifacts.noiseMeasurements)
-                        job.finishInputSpectrogram(artifacts.spectrogram)
-                    case .corrected:
-                        job.finishOutputMetricAnalysis(artifacts.metrics)
-                        preview.setIntegratedLoudnessLUFS(artifacts.metrics.integratedLoudnessLUFS, for: .corrected)
-                        if let masteringAnalysis = artifacts.masteringAnalysis {
-                            job.finishOutputMasteringAnalysis(masteringAnalysis)
-                        }
-                        job.finishOutputNoiseMeasurement(artifacts.noiseMeasurements)
-                        job.finishOutputSpectrogram(artifacts.spectrogram)
-                    case .mastered:
-                        job.finishMasteredMetricAnalysis(artifacts.metrics)
-                        preview.setIntegratedLoudnessLUFS(artifacts.metrics.integratedLoudnessLUFS, for: .mastered)
-                        job.finishMasteredNoiseMeasurement(artifacts.noiseMeasurements)
-                        job.finishMasteredSpectrogram(artifacts.spectrogram)
-                    }
-                }
-            } catch {
-                await MainActor.run {
-                    guard isCurrentMetricSelection(target: target, selectionID: selectionID, fileURL: url) else { return }
-                    job.failMetricAnalysis()
-                }
-            }
-        }
-    }
-
-    private func makeAudioAnalysisArtifacts(
-        for url: URL,
-        includeMasteringAnalysis: Bool = true,
-        logHandler: (@Sendable (String) -> Void)? = nil
-    ) async throws -> AudioAnalysisArtifacts {
-        try await makeAnalysisArtifacts(
+    private func analyzeMetrics(for url: URL, target: DisplayAnalysisTarget, selectionID: UUID) {
+        startDisplayAnalysisTask(
             for: url,
-            includePreview: true,
-            includeMasteringAnalysis: includeMasteringAnalysis,
-            correctionAnalysisMode: nil,
-            logHandler: logHandler
+            target: target,
+            selectionID: selectionID,
+            includePreview: false,
+            includeMasteringAnalysis: target == .corrected,
+            correctionAnalysisMode: target == .input ? job.selectedAnalysisMode.resolvedMode : nil,
+            logHandler: displayAnalysisLogHandler(for: target)
         )
     }
 
-    private func makeAnalysisArtifacts(
+    private func startDisplayAnalysisTask(
         for url: URL,
+        target: DisplayAnalysisTarget,
+        selectionID: UUID,
         includePreview: Bool,
         includeMasteringAnalysis: Bool,
         correctionAnalysisMode: AudioAnalysisMode?,
         logHandler: (@Sendable (String) -> Void)? = nil
-    ) async throws -> AudioAnalysisArtifacts {
-        try await Task.detached(priority: .utility) {
-            let signal = try await Self.measureDisplayAnalysis("ファイル読み込み", logHandler: logHandler) {
-                try AudioFileService.loadAudio(from: url)
-            }
-            async let displaySnapshots: AudioFileService.AudioDisplaySnapshots? = Self.measureOptionalDisplayAnalysis("プレビュー/スペクトログラム生成", isEnabled: includePreview, logHandler: logHandler) {
-                AudioFileService.makeDisplaySnapshots(from: signal)
-            }
-            async let metrics = Self.measureDisplayAnalysis("比較指標", logHandler: logHandler) {
-                try await AudioComparisonService.analyzeConcurrently(signal: signal)
-            }
-            async let masteringAnalysis: MasteringAnalysis? = Self.measureOptionalDisplayAnalysis("マスタリング解析", isEnabled: includeMasteringAnalysis, logHandler: logHandler) {
-                MasteringAnalysisService.analyze(signal: signal)
-            }
-            async let correctionAnalysis: AnalysisData? = Self.measureCorrectionAnalysis(correctionAnalysisMode, signal: signal, logHandler: logHandler)
-            async let noiseMeasurements = Self.measureDisplayAnalysis("ノイズ測定", logHandler: logHandler) {
-                NoiseMeasurementService.analyze(signal: signal)
-            }
-            async let spectrogramWithoutPreview = Self.measureOptionalDisplayAnalysis("スペクトログラム生成", isEnabled: !includePreview, logHandler: logHandler) {
-                AudioFileService.makeSpectrogramSnapshot(from: signal)
-            }
-            let resolvedDisplaySnapshots = try await displaySnapshots
-            let resolvedSpectrogramWithoutPreview = try await spectrogramWithoutPreview
-            return try await AudioAnalysisArtifacts(
-                previewSnapshot: resolvedDisplaySnapshots?.previewSnapshot,
-                metrics: metrics,
-                masteringAnalysis: masteringAnalysis,
-                correctionAnalysis: correctionAnalysis,
+    ) {
+        displayAnalysisTasks[target]?.cancel()
+        displayAnalysisTasks[target] = Task {
+            await runDisplayAnalysis(
+                for: url,
+                target: target,
+                selectionID: selectionID,
+                includePreview: includePreview,
+                includeMasteringAnalysis: includeMasteringAnalysis,
                 correctionAnalysisMode: correctionAnalysisMode,
-                noiseMeasurements: noiseMeasurements,
-                spectrogram: resolvedDisplaySnapshots?.spectrogram ?? resolvedSpectrogramWithoutPreview ?? .empty
+                logHandler: logHandler
             )
-        }.value
+        }
     }
 
-    private func displayAnalysisLogHandler(for target: MetricTarget) -> (@Sendable (String) -> Void) {
+    private func cancelDisplayAnalysisTasks(for targets: [DisplayAnalysisTarget] = DisplayAnalysisTarget.allDisplayTargets) {
+        for target in targets {
+            displayAnalysisTasks[target]?.cancel()
+            displayAnalysisTasks[target] = nil
+        }
+    }
+
+    private func runDisplayAnalysis(
+        for url: URL,
+        target: DisplayAnalysisTarget,
+        selectionID: UUID,
+        includePreview: Bool,
+        includeMasteringAnalysis: Bool,
+        correctionAnalysisMode: AudioAnalysisMode?,
+        logHandler: (@Sendable (String) -> Void)? = nil
+    ) async {
+        let isCurrentSelection = await MainActor.run {
+            isCurrentMetricSelection(target: target, selectionID: selectionID, fileURL: url)
+        }
+        guard isCurrentSelection else { return }
+
+        let requiredKinds = requiredDisplayAnalysisKinds(
+            includePreview: includePreview,
+            includeMasteringAnalysis: includeMasteringAnalysis,
+            correctionAnalysisMode: correctionAnalysisMode
+        )
+        let missingKinds = await MainActor.run {
+            requiredKinds.filter {
+                !hasCachedAnalysis($0, for: target, fileURL: url, correctionAnalysisMode: correctionAnalysisMode)
+            }
+        }
+        guard !missingKinds.isEmpty else { return }
+
+        await MainActor.run {
+            guard isCurrentMetricSelection(target: target, selectionID: selectionID, fileURL: url) else { return }
+            for kind in missingKinds {
+                job.beginDisplayAnalysis(kind, for: target)
+            }
+        }
+        guard await shouldContinueDisplayAnalysis(target: target, selectionID: selectionID, fileURL: url) else { return }
+
+        let signal: AudioSignal
+        do {
+            signal = try await Self.measureDisplayAnalysis("ファイル読み込み", logHandler: logHandler) {
+                try await Self.runDisplayAnalysisWorker {
+                    try AudioFileService.loadAudio(from: url)
+                }
+            }
+        } catch {
+            await failDisplayAnalysisKinds(missingKinds, for: target, selectionID: selectionID, fileURL: url)
+            return
+        }
+
+        guard await shouldContinueDisplayAnalysis(target: target, selectionID: selectionID, fileURL: url) else { return }
+        if includePreview && (missingKinds.contains(.preview) || missingKinds.contains(.spectrogram)) {
+            do {
+                let snapshots = try await Self.measureDisplayAnalysis("プレビュー/スペクトログラム生成", logHandler: logHandler) {
+                    try await Self.runDisplayAnalysisWorker {
+                        AudioFileService.makeDisplaySnapshots(from: signal)
+                    }
+                }
+                await MainActor.run {
+                    guard isCurrentMetricSelection(target: target, selectionID: selectionID, fileURL: url) else { return }
+                    preview.setPreviewSnapshot(snapshots.previewSnapshot, for: previewTarget(for: target), sourceURL: url)
+                    job.finishDisplayAnalysis(.preview, for: target)
+                    finishSpectrogramAnalysis(snapshots.spectrogram, for: target)
+                }
+            } catch {
+                await failDisplayAnalysisKinds([.preview, .spectrogram].filter { missingKinds.contains($0) }, for: target, selectionID: selectionID, fileURL: url)
+            }
+        } else if missingKinds.contains(.spectrogram) {
+            do {
+                let spectrogram = try await Self.measureDisplayAnalysis("スペクトログラム生成", logHandler: logHandler) {
+                    try await Self.runDisplayAnalysisWorker {
+                        AudioFileService.makeSpectrogramSnapshot(from: signal)
+                    }
+                }
+                await MainActor.run {
+                    guard isCurrentMetricSelection(target: target, selectionID: selectionID, fileURL: url) else { return }
+                    finishSpectrogramAnalysis(spectrogram, for: target)
+                }
+            } catch {
+                await failDisplayAnalysisKinds([.spectrogram], for: target, selectionID: selectionID, fileURL: url)
+            }
+        }
+
+        guard await shouldContinueDisplayAnalysis(target: target, selectionID: selectionID, fileURL: url) else { return }
+        if missingKinds.contains(.metrics) {
+            do {
+                let metrics = try await Self.measureDisplayAnalysis("比較指標", logHandler: logHandler) {
+                    try await AudioComparisonService.analyzeConcurrently(signal: signal)
+                }
+                await MainActor.run {
+                    guard isCurrentMetricSelection(target: target, selectionID: selectionID, fileURL: url) else { return }
+                    finishMetricsAnalysis(metrics, for: target)
+                    preview.setIntegratedLoudnessLUFS(metrics.integratedLoudnessLUFS, for: previewTarget(for: target))
+                }
+            } catch {
+                await failDisplayAnalysisKinds([.metrics], for: target, selectionID: selectionID, fileURL: url)
+            }
+        }
+
+        guard await shouldContinueDisplayAnalysis(target: target, selectionID: selectionID, fileURL: url) else { return }
+        if includeMasteringAnalysis, missingKinds.contains(.masteringAnalysis) {
+            do {
+                let masteringAnalysis = try await Self.measureDisplayAnalysis("マスタリング解析", logHandler: logHandler) {
+                    try await Self.runDisplayAnalysisWorker {
+                        MasteringAnalysisService.analyze(signal: signal)
+                    }
+                }
+                await MainActor.run {
+                    guard isCurrentMetricSelection(target: target, selectionID: selectionID, fileURL: url) else { return }
+                    job.finishOutputMasteringAnalysis(masteringAnalysis)
+                }
+            } catch {
+                await failDisplayAnalysisKinds([.masteringAnalysis], for: target, selectionID: selectionID, fileURL: url)
+            }
+        }
+
+        guard await shouldContinueDisplayAnalysis(target: target, selectionID: selectionID, fileURL: url) else { return }
+        if let correctionAnalysisMode, missingKinds.contains(.correctionAnalysis) {
+            do {
+                let correctionAnalysis = try await Self.measureDisplayAnalysis("補正解析", logHandler: logHandler) {
+                    try await Self.runDisplayAnalysisWorker {
+                        AudioAnalyzer(mode: correctionAnalysisMode).analyze(signal: signal)
+                    }
+                }
+                await MainActor.run {
+                    guard isCurrentMetricSelection(target: target, selectionID: selectionID, fileURL: url) else { return }
+                    job.finishInputCorrectionAnalysis(correctionAnalysis, mode: correctionAnalysisMode)
+                }
+            } catch {
+                await failDisplayAnalysisKinds([.correctionAnalysis], for: target, selectionID: selectionID, fileURL: url)
+            }
+        }
+
+        guard await shouldContinueDisplayAnalysis(target: target, selectionID: selectionID, fileURL: url) else { return }
+        if missingKinds.contains(.noise) {
+            do {
+                let noiseMeasurements = try await Self.measureDisplayAnalysis("ノイズ測定", logHandler: logHandler) {
+                    try await Self.runDisplayAnalysisWorker {
+                        try NoiseMeasurementService.analyzeCancellable(signal: signal)
+                    }
+                }
+                await MainActor.run {
+                    guard isCurrentMetricSelection(target: target, selectionID: selectionID, fileURL: url) else { return }
+                    finishNoiseAnalysis(noiseMeasurements, for: target)
+                }
+            } catch {
+                await failDisplayAnalysisKinds([.noise], for: target, selectionID: selectionID, fileURL: url)
+            }
+        }
+    }
+
+    private static func runDisplayAnalysisWorker<T: Sendable>(
+        _ work: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        let worker = Task.detached(priority: .utility) {
+            try Task.checkCancellation()
+            let result = try await work()
+            try Task.checkCancellation()
+            return result
+        }
+        return try await withTaskCancellationHandler {
+            try await worker.value
+        } onCancel: {
+            worker.cancel()
+        }
+    }
+
+    private func shouldContinueDisplayAnalysis(
+        target: DisplayAnalysisTarget,
+        selectionID: UUID,
+        fileURL: URL
+    ) async -> Bool {
+        guard !Task.isCancelled else { return false }
+        return await MainActor.run {
+            isCurrentMetricSelection(target: target, selectionID: selectionID, fileURL: fileURL)
+        }
+    }
+
+    private func displayAnalysisLogHandler(for target: DisplayAnalysisTarget) -> (@Sendable (String) -> Void) {
         switch target {
         case .input, .corrected:
             { message in
@@ -2323,17 +2445,6 @@ struct ContentView: View {
         return try await measureDisplayAnalysis(label, logHandler: logHandler, work: work)
     }
 
-    private static func measureCorrectionAnalysis(
-        _ mode: AudioAnalysisMode?,
-        signal: AudioSignal,
-        logHandler: (@Sendable (String) -> Void)?
-    ) async throws -> AnalysisData? {
-        guard let mode else { return nil }
-        return try await measureDisplayAnalysis("補正解析", logHandler: logHandler) {
-            AudioAnalyzer(mode: mode).analyze(signal: signal)
-        }
-    }
-
     private static func displayAnalysisDurationSeconds(since start: UInt64) -> Double {
         let end = DispatchTime.now().uptimeNanoseconds
         return Double(end - start) / 1_000_000_000
@@ -2356,32 +2467,126 @@ struct ContentView: View {
         }
     }
 
-    private func hasCachedAnalysis(for target: MetricTarget, fileURL: URL) -> Bool {
+    private func requiredDisplayAnalysisKinds(
+        includePreview: Bool,
+        includeMasteringAnalysis: Bool,
+        correctionAnalysisMode: AudioAnalysisMode?
+    ) -> [DisplayAnalysisKind] {
+        var kinds: [DisplayAnalysisKind] = [.spectrogram, .metrics, .noise]
+        if includePreview {
+            kinds.insert(.preview, at: 0)
+        }
+        if includeMasteringAnalysis {
+            kinds.append(.masteringAnalysis)
+        }
+        if correctionAnalysisMode != nil {
+            kinds.append(.correctionAnalysis)
+        }
+        return kinds
+    }
+
+    private func hasCachedAnalysis(
+        _ kind: DisplayAnalysisKind,
+        for target: DisplayAnalysisTarget,
+        fileURL: URL,
+        correctionAnalysisMode: AudioAnalysisMode?
+    ) -> Bool {
+        guard isCurrentMetricSelection(target: target, selectionID: inputSelectionID, fileURL: fileURL) else {
+            return false
+        }
+        switch (target, kind) {
+        case (.input, .metrics):
+            return job.inputMetrics != nil
+        case (.corrected, .metrics):
+            return job.outputMetrics != nil
+        case (.mastered, .metrics):
+            return job.masteredMetrics != nil
+        case (.input, .spectrogram):
+            return job.inputSpectrogram != nil
+        case (.corrected, .spectrogram):
+            return job.outputSpectrogram != nil
+        case (.mastered, .spectrogram):
+            return job.masteredSpectrogram != nil
+        case (.input, .noise):
+            return job.inputNoiseMeasurements != nil
+        case (.corrected, .noise):
+            return job.outputNoiseMeasurements != nil
+        case (.mastered, .noise):
+            return job.masteredNoiseMeasurements != nil
+        case (.input, .correctionAnalysis):
+            return job.inputCorrectionAnalysis != nil
+                && job.inputCorrectionAnalysisMode == correctionAnalysisMode
+        case (.corrected, .masteringAnalysis):
+            return job.outputMasteringAnalysis != nil
+        case (_, .preview):
+            return false
+        default:
+            return true
+        }
+    }
+
+    private func finishMetricsAnalysis(_ metrics: AudioMetricSnapshot, for target: DisplayAnalysisTarget) {
         switch target {
         case .input:
-            return job.inputFile == fileURL
-                && job.inputMetrics != nil
-                && job.inputNoiseMeasurements != nil
-                && job.inputSpectrogram != nil
-                && job.inputCorrectionAnalysis != nil
-                && job.inputCorrectionAnalysisMode == job.selectedAnalysisMode.resolvedMode
+            job.finishInputMetricAnalysis(metrics)
         case .corrected:
-            return job.outputFile == fileURL
-                && job.outputMetrics != nil
-                && job.outputMasteringAnalysis != nil
-                && job.outputNoiseMeasurements != nil
-                && job.outputSpectrogram != nil
+            job.finishOutputMetricAnalysis(metrics)
         case .mastered:
-            return job.masteredOutputFile == fileURL
-                && job.masteredMetrics != nil
-                && job.masteredNoiseMeasurements != nil
-                && job.masteredSpectrogram != nil
+            job.finishMasteredMetricAnalysis(metrics)
+        }
+    }
+
+    private func finishSpectrogramAnalysis(_ spectrogram: SpectrogramSnapshot, for target: DisplayAnalysisTarget) {
+        switch target {
+        case .input:
+            job.finishInputSpectrogram(spectrogram)
+        case .corrected:
+            job.finishOutputSpectrogram(spectrogram)
+        case .mastered:
+            job.finishMasteredSpectrogram(spectrogram)
+        }
+    }
+
+    private func finishNoiseAnalysis(_ noiseMeasurements: NoiseMeasurementSnapshot, for target: DisplayAnalysisTarget) {
+        switch target {
+        case .input:
+            job.finishInputNoiseMeasurement(noiseMeasurements)
+        case .corrected:
+            job.finishOutputNoiseMeasurement(noiseMeasurements)
+        case .mastered:
+            job.finishMasteredNoiseMeasurement(noiseMeasurements)
+        }
+    }
+
+    private func failDisplayAnalysisKinds(
+        _ kinds: [DisplayAnalysisKind],
+        for target: DisplayAnalysisTarget,
+        selectionID: UUID,
+        fileURL: URL
+    ) async {
+        await MainActor.run {
+            guard isCurrentMetricSelection(target: target, selectionID: selectionID, fileURL: fileURL) else { return }
+            for kind in kinds {
+                job.failDisplayAnalysis(kind, for: target)
+            }
+        }
+    }
+
+    private func previewTarget(for target: DisplayAnalysisTarget) -> AudioPreviewTarget {
+        switch target {
+        case .input:
+            .input
+        case .corrected:
+            .corrected
+        case .mastered:
+            .mastered
         }
     }
 
     @discardableResult
     private func beginInputSelection(for url: URL) -> UUID {
         let selectionID = UUID()
+        cancelDisplayAnalysisTasks()
         inputSelectionID = selectionID
         PreviewFileStore.removeAllPreviewFiles()
         job.prepareForSelection(url)
@@ -2441,7 +2646,7 @@ struct ContentView: View {
         inputSelectionID == selectionID && job.outputFile == correctedFile
     }
 
-    private func isCurrentMetricSelection(target: MetricTarget, selectionID: UUID, fileURL: URL) -> Bool {
+    private func isCurrentMetricSelection(target: DisplayAnalysisTarget, selectionID: UUID, fileURL: URL) -> Bool {
         guard inputSelectionID == selectionID else { return false }
 
         switch target {

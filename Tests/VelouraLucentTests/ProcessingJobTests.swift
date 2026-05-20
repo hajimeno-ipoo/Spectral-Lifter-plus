@@ -393,6 +393,79 @@ struct ProcessingJobTests {
         #expect(job.appliedCorrectionSettings == nil)
     }
 
+    @Test
+    func displayAnalysisStateSeparatesMetricsAndNoise() {
+        let job = ProcessingJob()
+
+        job.beginDisplayAnalysis(.noise, for: .input)
+
+        #expect(job.isAnalyzingNoise)
+        #expect(job.isAnalyzingMetrics == false)
+        #expect(job.displayAnalysisStatusText == "ノイズ確認を更新中")
+    }
+
+    @Test
+    func partialDisplayAnalysisFailureKeepsCompletedMetrics() {
+        let job = ProcessingJob()
+        let metrics = makeSnapshot()
+
+        job.beginDisplayAnalysis(.metrics, for: .input)
+        job.beginDisplayAnalysis(.noise, for: .input)
+        job.finishInputMetricAnalysis(metrics)
+        job.failDisplayAnalysis(.noise, for: .input)
+
+        #expect(job.inputMetrics?.integratedLoudnessLUFS == metrics.integratedLoudnessLUFS)
+        #expect(job.displayAnalysisState(.metrics, for: .input) == .completed)
+        #expect(job.displayAnalysisState(.noise, for: .input) == .failed)
+        #expect(job.failedDisplayAnalysisText == "一部の表示解析を完了できませんでした: ノイズ確認")
+    }
+
+    @Test
+    func selectingInputResetsDisplayAnalysisStates() {
+        let job = ProcessingJob()
+        job.beginDisplayAnalysis(.metrics, for: .input)
+        job.failDisplayAnalysis(.noise, for: .corrected)
+
+        job.prepareForSelection(URL(fileURLWithPath: "/tmp/input.wav"))
+
+        #expect(job.displayAnalysisState(.metrics, for: .input) == .idle)
+        #expect(job.displayAnalysisState(.noise, for: .corrected) == .idle)
+        #expect(job.isAnalyzingDisplayAnalysis == false)
+        #expect(job.failedDisplayAnalysisText == nil)
+    }
+
+    @Test
+    func correctedAnalysisForMasteringRequiresAnalysisAndNoiseMeasurements() {
+        let job = ProcessingJob()
+        let output = FileManager.default.temporaryDirectory.appendingPathComponent("processing-job-mastering-ready.wav")
+        FileManager.default.createFile(atPath: output.path(percentEncoded: false), contents: Data())
+        defer {
+            try? FileManager.default.removeItem(at: output)
+        }
+
+        job.finishSuccess(output)
+
+        #expect(job.canUseCorrectedAnalysisForMastering == false)
+        #expect(job.masteringStatusMessage == "補正後の解析中")
+
+        job.finishOutputMasteringAnalysis(makeMasteringAnalysis())
+
+        #expect(job.canUseCorrectedAnalysisForMastering == false)
+        #expect(job.masteringStatusMessage == "補正後の解析中")
+
+        job.finishOutputNoiseMeasurement(makeNoiseSnapshot(
+            hiss: -70,
+            sibilance: -68,
+            shimmer: -72,
+            mud: -65,
+            hum: -80,
+            rumble: -78
+        ))
+
+        #expect(job.canUseCorrectedAnalysisForMastering)
+        #expect(job.masteringStatusMessage == "実行できます")
+    }
+
     private func makeSnapshot() -> AudioMetricSnapshot {
         AudioMetricSnapshot(
             peakDBFS: -1,

@@ -2,16 +2,27 @@ import Foundation
 
 enum NoiseMeasurementService {
     static func analyze(signal: AudioSignal) -> NoiseMeasurementSnapshot {
-        analyze(signal: signal, definitions: definitions)
+        try! analyze(signal: signal, definitions: definitions, cancellationCheck: {})
     }
 
     static func analyze(signal: AudioSignal, ids requestedIDs: [String]) -> NoiseMeasurementSnapshot {
         let requestedIDSet = Set(requestedIDs)
         let selectedDefinitions = definitions.filter { requestedIDSet.contains($0.id) }
-        return analyze(signal: signal, definitions: selectedDefinitions)
+        return try! analyze(signal: signal, definitions: selectedDefinitions, cancellationCheck: {})
     }
 
-    private static func analyze(signal: AudioSignal, definitions selectedDefinitions: [NoiseMeasurementDefinition]) -> NoiseMeasurementSnapshot {
+    static func analyzeCancellable(signal: AudioSignal) throws -> NoiseMeasurementSnapshot {
+        try analyze(signal: signal, definitions: definitions) {
+            try Task.checkCancellation()
+        }
+    }
+
+    private static func analyze(
+        signal: AudioSignal,
+        definitions selectedDefinitions: [NoiseMeasurementDefinition],
+        cancellationCheck: @escaping () throws -> Void
+    ) throws -> NoiseMeasurementSnapshot {
+        try cancellationCheck()
         let mono = signal.monoMixdown()
         guard !mono.isEmpty else {
             return NoiseMeasurementSnapshot(values: selectedDefinitions.map {
@@ -28,7 +39,12 @@ enum NoiseMeasurementService {
         }
 
         let requestedIDs = Set(selectedDefinitions.map(\.id))
-        let measuredLevels = measure(mono: mono, sampleRate: signal.sampleRate, ids: requestedIDs)
+        let measuredLevels = try measure(
+            mono: mono,
+            sampleRate: signal.sampleRate,
+            ids: requestedIDs,
+            cancellationCheck: cancellationCheck
+        )
 
         let values = selectedDefinitions.map { definition in
             let measured = measuredLevels[definition.id] ?? -120
@@ -57,43 +73,55 @@ enum NoiseMeasurementService {
         ]
     }
 
-    private static func measure(mono: [Float], sampleRate: Double, ids requestedIDs: Set<String>) -> [String: Double] {
+    private static func measure(
+        mono: [Float],
+        sampleRate: Double,
+        ids requestedIDs: Set<String>,
+        cancellationCheck: @escaping () throws -> Void
+    ) throws -> [String: Double] {
         var measured: [String: Double] = [:]
-        var quietFloorContext = QuietFloorContext(reference: mono, sampleRate: sampleRate)
+        var quietFloorContext = QuietFloorContext(reference: mono, sampleRate: sampleRate, cancellationCheck: cancellationCheck)
 
         if requestedIDs.contains(NoiseMeasurementID.hiss) {
-            let high = bandPass(mono, lower: 8_000, upper: min(20_000, sampleRate * 0.5 - 100), sampleRate: sampleRate)
-            measured[NoiseMeasurementID.hiss] = quietFloorContext.quietBandNoiseFloorDB(band: high)
+            try cancellationCheck()
+            let high = try bandPass(mono, lower: 8_000, upper: min(20_000, sampleRate * 0.5 - 100), sampleRate: sampleRate, cancellationCheck: cancellationCheck)
+            measured[NoiseMeasurementID.hiss] = try quietFloorContext.quietBandNoiseFloorDB(band: high)
         }
 
         if requestedIDs.contains(NoiseMeasurementID.sibilance) {
-            let sibilance = bandPass(mono, lower: 5_000, upper: min(9_000, sampleRate * 0.5 - 100), sampleRate: sampleRate)
-            measured[NoiseMeasurementID.sibilance] = transientExcessDB(band: sibilance, sampleRate: sampleRate)
+            try cancellationCheck()
+            let sibilance = try bandPass(mono, lower: 5_000, upper: min(9_000, sampleRate * 0.5 - 100), sampleRate: sampleRate, cancellationCheck: cancellationCheck)
+            measured[NoiseMeasurementID.sibilance] = try transientExcessDB(band: sibilance, sampleRate: sampleRate, cancellationCheck: cancellationCheck)
         }
 
         if requestedIDs.contains(NoiseMeasurementID.shimmer) {
-            let shimmer = bandPass(mono, lower: 10_000, upper: min(16_000, sampleRate * 0.5 - 100), sampleRate: sampleRate)
-            measured[NoiseMeasurementID.shimmer] = quietFloorContext.quietBandNoiseFloorDB(band: shimmer)
+            try cancellationCheck()
+            let shimmer = try bandPass(mono, lower: 10_000, upper: min(16_000, sampleRate * 0.5 - 100), sampleRate: sampleRate, cancellationCheck: cancellationCheck)
+            measured[NoiseMeasurementID.shimmer] = try quietFloorContext.quietBandNoiseFloorDB(band: shimmer)
         }
 
         if requestedIDs.contains(NoiseMeasurementID.mud) {
+            try cancellationCheck()
             let fullRMS = rmsDB(mono)
-            let lowMid = bandPass(mono, lower: 300, upper: 1_000, sampleRate: sampleRate)
+            let lowMid = try bandPass(mono, lower: 300, upper: 1_000, sampleRate: sampleRate, cancellationCheck: cancellationCheck)
             measured[NoiseMeasurementID.mud] = sustainedBandRatioDB(band: lowMid, fullRMSDB: fullRMS)
         }
 
         if requestedIDs.contains(NoiseMeasurementID.hum) {
-            measured[NoiseMeasurementID.hum] = humProminenceDB(mono: mono, sampleRate: sampleRate)
+            try cancellationCheck()
+            measured[NoiseMeasurementID.hum] = try humProminenceDB(mono: mono, sampleRate: sampleRate, cancellationCheck: cancellationCheck)
         }
 
         if requestedIDs.contains(NoiseMeasurementID.rumble) {
-            let low = bandPass(mono, lower: 20, upper: 150, sampleRate: sampleRate)
-            measured[NoiseMeasurementID.rumble] = quietFloorContext.quietBandNoiseFloorDB(band: low)
+            try cancellationCheck()
+            let low = try bandPass(mono, lower: 20, upper: 150, sampleRate: sampleRate, cancellationCheck: cancellationCheck)
+            measured[NoiseMeasurementID.rumble] = try quietFloorContext.quietBandNoiseFloorDB(band: low)
         }
 
         if requestedIDs.contains(NoiseMeasurementID.room) {
-            let room = bandPass(mono, lower: 100, upper: min(8_000, sampleRate * 0.5 - 100), sampleRate: sampleRate)
-            measured[NoiseMeasurementID.room] = quietFloorContext.quietBandNoiseFloorDB(band: room)
+            try cancellationCheck()
+            let room = try bandPass(mono, lower: 100, upper: min(8_000, sampleRate * 0.5 - 100), sampleRate: sampleRate, cancellationCheck: cancellationCheck)
+            measured[NoiseMeasurementID.room] = try quietFloorContext.quietBandNoiseFloorDB(band: room)
         }
 
         return measured
@@ -102,60 +130,70 @@ enum NoiseMeasurementService {
     private struct QuietFloorContext {
         let reference: [Float]
         let sampleRate: Double
+        let cancellationCheck: () throws -> Void
         private var referenceFrames: [Double]?
 
-        init(reference: [Float], sampleRate: Double) {
+        init(reference: [Float], sampleRate: Double, cancellationCheck: @escaping () throws -> Void) {
             self.reference = reference
             self.sampleRate = sampleRate
+            self.cancellationCheck = cancellationCheck
             referenceFrames = nil
         }
 
-        mutating func quietBandNoiseFloorDB(band: [Float]) -> Double {
+        mutating func quietBandNoiseFloorDB(band: [Float]) throws -> Double {
             let frameSize = max(512, Int(sampleRate * 0.100))
             let hopSize = max(256, Int(sampleRate * 0.050))
-            let referenceFrames = cachedReferenceFrames(frameSize: frameSize, hopSize: hopSize)
-            return NoiseMeasurementService.quietBandNoiseFloorDB(
+            let referenceFrames = try cachedReferenceFrames(frameSize: frameSize, hopSize: hopSize)
+            return try NoiseMeasurementService.quietBandNoiseFloorDB(
                 band: band,
                 referenceFrames: referenceFrames,
                 frameSize: frameSize,
-                hopSize: hopSize
+                hopSize: hopSize,
+                cancellationCheck: cancellationCheck
             )
         }
 
-        private mutating func cachedReferenceFrames(frameSize: Int, hopSize: Int) -> [Double] {
+        private mutating func cachedReferenceFrames(frameSize: Int, hopSize: Int) throws -> [Double] {
             if let referenceFrames {
                 return referenceFrames
             }
-            let frames = NoiseMeasurementService.frameRMS(reference, frameSize: frameSize, hopSize: hopSize)
+            let frames = try NoiseMeasurementService.frameRMS(
+                reference,
+                frameSize: frameSize,
+                hopSize: hopSize,
+                cancellationCheck: cancellationCheck
+            )
             referenceFrames = frames
             return frames
         }
     }
 
-    private static func bandPass(_ samples: [Float], lower: Double, upper: Double, sampleRate: Double) -> [Float] {
+    private static func bandPass(
+        _ samples: [Float],
+        lower: Double,
+        upper: Double,
+        sampleRate: Double,
+        cancellationCheck: @escaping () throws -> Void
+    ) throws -> [Float] {
         guard lower < upper, upper < sampleRate * 0.5 else { return Array(repeating: 0, count: samples.count) }
         var filtered = samples
         for _ in 0..<4 {
+            try cancellationCheck()
             filtered = SpectralDSP.highPass(filtered, cutoff: lower, sampleRate: sampleRate)
+            try cancellationCheck()
             filtered = SpectralDSP.lowPass(filtered, cutoff: upper, sampleRate: sampleRate)
         }
         return filtered
     }
 
-    private static func quietBandNoiseFloorDB(band: [Float], reference: [Float], sampleRate: Double) -> Double {
-        let frameSize = max(512, Int(sampleRate * 0.100))
-        let hopSize = max(256, Int(sampleRate * 0.050))
-        let referenceFrames = frameRMS(reference, frameSize: frameSize, hopSize: hopSize)
-        return quietBandNoiseFloorDB(
-            band: band,
-            referenceFrames: referenceFrames,
-            frameSize: frameSize,
-            hopSize: hopSize
-        )
-    }
-
-    private static func quietBandNoiseFloorDB(band: [Float], referenceFrames: [Double], frameSize: Int, hopSize: Int) -> Double {
-        let bandFrames = frameRMS(band, frameSize: frameSize, hopSize: hopSize)
+    private static func quietBandNoiseFloorDB(
+        band: [Float],
+        referenceFrames: [Double],
+        frameSize: Int,
+        hopSize: Int,
+        cancellationCheck: @escaping () throws -> Void
+    ) throws -> Double {
+        let bandFrames = try frameRMS(band, frameSize: frameSize, hopSize: hopSize, cancellationCheck: cancellationCheck)
         guard !referenceFrames.isEmpty, referenceFrames.count == bandFrames.count else {
             return rmsDB(band)
         }
@@ -167,41 +205,41 @@ enum NoiseMeasurementService {
         return percentile(quietValues.isEmpty ? bandFrames : quietValues, 0.20)
     }
 
-    private static func transientExcessDB(band: [Float], sampleRate: Double) -> Double {
+    private static func transientExcessDB(band: [Float], sampleRate: Double, cancellationCheck: @escaping () throws -> Void) throws -> Double {
         let frameSize = max(128, Int(sampleRate * 0.020))
         let hopSize = max(64, Int(sampleRate * 0.010))
-        let frames = frameRMS(band, frameSize: frameSize, hopSize: hopSize).sorted()
+        let frames = try frameRMS(band, frameSize: frameSize, hopSize: hopSize, cancellationCheck: cancellationCheck).sorted()
         guard frames.count >= 4 else { return 0 }
         return percentile(frames, 0.95) - percentile(frames, 0.50)
-    }
-
-    private static func transientPeakDB(band: [Float], sampleRate: Double) -> Double {
-        let frameSize = max(128, Int(sampleRate * 0.020))
-        let hopSize = max(64, Int(sampleRate * 0.010))
-        let frames = frameRMS(band, frameSize: frameSize, hopSize: hopSize)
-        guard frames.count >= 4 else { return rmsDB(band) }
-        return percentile(frames, 0.95)
     }
 
     private static func sustainedBandRatioDB(band: [Float], fullRMSDB: Double) -> Double {
         rmsDB(band) - fullRMSDB
     }
 
-    private static func humProminenceDB(mono: [Float], sampleRate: Double) -> Double {
+    private static func humProminenceDB(mono: [Float], sampleRate: Double, cancellationCheck: @escaping () throws -> Void) throws -> Double {
         let baseFrequencies = [50.0, 60.0]
         var strongest = 0.0
         let spectrogram = SpectralDSP.stft(mono, fftSize: 8192, hopSize: 4096)
         let frequencyStep = sampleRate / Double(spectrogram.fftSize)
 
         for base in baseFrequencies {
+            try cancellationCheck()
             var harmonic = base
             while harmonic <= min(360, sampleRate * 0.5 - 30) {
-                let spectral = harmonicProminenceDB(
+                try cancellationCheck()
+                let spectral = try harmonicProminenceDB(
                     spectrogram: spectrogram,
                     frequency: harmonic,
-                    frequencyStep: frequencyStep
+                    frequencyStep: frequencyStep,
+                    cancellationCheck: cancellationCheck
                 )
-                let sine = windowedSineProminenceDB(mono: mono, frequency: harmonic, sampleRate: sampleRate)
+                let sine = try windowedSineProminenceDB(
+                    mono: mono,
+                    frequency: harmonic,
+                    sampleRate: sampleRate,
+                    cancellationCheck: cancellationCheck
+                )
                 strongest = max(strongest, spectral, sine)
                 harmonic += base
             }
@@ -210,7 +248,12 @@ enum NoiseMeasurementService {
         return strongest
     }
 
-    private static func windowedSineProminenceDB(mono: [Float], frequency: Double, sampleRate: Double) -> Double {
+    private static func windowedSineProminenceDB(
+        mono: [Float],
+        frequency: Double,
+        sampleRate: Double,
+        cancellationCheck: @escaping () throws -> Void
+    ) throws -> Double {
         let frameSize = max(2048, Int(sampleRate * 0.50))
         let hopSize = max(1024, frameSize / 2)
         guard mono.count >= frameSize else { return 0 }
@@ -218,6 +261,7 @@ enum NoiseMeasurementService {
         var values: [Double] = []
         var start = 0
         while start + frameSize <= mono.count {
+            try cancellationCheck()
             let frame = Array(mono[start..<(start + frameSize)])
             let center = sineMagnitudeDB(frame, frequency: frequency, sampleRate: sampleRate)
             let surrounding = [
@@ -248,7 +292,12 @@ enum NoiseMeasurementService {
         return 20 * log10(max(magnitude, 1e-12))
     }
 
-    private static func harmonicProminenceDB(spectrogram: Spectrogram, frequency: Double, frequencyStep: Double) -> Double {
+    private static func harmonicProminenceDB(
+        spectrogram: Spectrogram,
+        frequency: Double,
+        frequencyStep: Double,
+        cancellationCheck: @escaping () throws -> Void
+    ) throws -> Double {
         let centerBin = max(1, min(spectrogram.binCount - 2, Int(round(frequency / frequencyStep))))
         let centerRadius = max(1, Int(round(1.5 / frequencyStep)))
         let excludeRadius = max(centerRadius + 1, Int(round(3.0 / frequencyStep)))
@@ -256,6 +305,9 @@ enum NoiseMeasurementService {
         var frameProminences: [Double] = []
 
         for frameIndex in 0..<spectrogram.frameCount {
+            if frameIndex.isMultiple(of: 32) {
+                try cancellationCheck()
+            }
             let frameOffset = frameIndex * spectrogram.binCount
             var centerMagnitudes: [Double] = []
             var surroundingMagnitudes: [Double] = []
@@ -285,7 +337,12 @@ enum NoiseMeasurementService {
         return max(0, percentile(frameProminences, 0.75))
     }
 
-    private static func frameRMS(_ samples: [Float], frameSize: Int, hopSize: Int) -> [Double] {
+    private static func frameRMS(
+        _ samples: [Float],
+        frameSize: Int,
+        hopSize: Int,
+        cancellationCheck: @escaping () throws -> Void
+    ) throws -> [Double] {
         guard !samples.isEmpty else { return [] }
         if samples.count <= frameSize {
             return [rmsDB(samples)]
@@ -293,13 +350,18 @@ enum NoiseMeasurementService {
 
         var values: [Double] = []
         var start = 0
+        var frameIndex = 0
         while start + frameSize <= samples.count {
+            if frameIndex.isMultiple(of: 64) {
+                try cancellationCheck()
+            }
             let frame = samples[start..<(start + frameSize)]
             let energy = frame.reduce(0.0) { partial, sample in
                 partial + Double(sample * sample)
             } / Double(frameSize)
             values.append(10 * log10(max(energy, 1e-12)))
             start += hopSize
+            frameIndex += 1
         }
         return values
     }

@@ -95,6 +95,33 @@ struct AudioComparisonServiceTests {
         #expect(concurrent.dynamics.count == synchronous.dynamics.count)
     }
 
+    @Test
+    func concurrentAnalysisStopsWhenTaskIsCancelled() async {
+        let sampleRate = 48_000.0
+        let frameCount = Int(sampleRate * 10)
+        let channel = (0..<frameCount).map { index in
+            let time = Double(index) / sampleRate
+            let tone = sin(2 * Double.pi * 440 * time) * 0.10
+            let air = sin(2 * Double.pi * 12_000 * time) * 0.01
+            return Float(tone + air)
+        }
+        let signal = AudioSignal(channels: [channel, channel], sampleRate: sampleRate)
+        let task = Task.detached(priority: .utility) {
+            try await AudioComparisonService.analyzeConcurrently(signal: signal)
+        }
+
+        task.cancel()
+
+        do {
+            _ = try await task.value
+            Issue.record("キャンセル済みの比較指標解析は完了せず CancellationError を返す必要があります")
+        } catch is CancellationError {
+            return
+        } catch {
+            Issue.record("Unexpected cancellation error: \(error)")
+        }
+    }
+
     private func makeTestTone(at url: URL) throws {
         let sampleRate = 48_000.0
         let frameCount = Int(sampleRate * 2)

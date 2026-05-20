@@ -18,6 +18,7 @@ struct NoiseWorkflowVerificationTests {
                 correctionSettings: strength.settings,
                 analysisMode: .cpu
             ) { _ in }
+            #expect(FileManager.default.fileExists(atPath: correctedURL.path(percentEncoded: false)))
             let correctedSignal = try AudioFileService.loadAudio(from: correctedURL)
             let correctedNoise = NoiseMeasurementService.analyze(signal: correctedSignal)
             let masteredURL = try await MasteringService().process(
@@ -42,7 +43,6 @@ struct NoiseWorkflowVerificationTests {
                 )
             )
 
-            #expect(FileManager.default.fileExists(atPath: correctedURL.path(percentEncoded: false)))
             #expect(FileManager.default.fileExists(atPath: masteredURL.path(percentEncoded: false)))
         }
 

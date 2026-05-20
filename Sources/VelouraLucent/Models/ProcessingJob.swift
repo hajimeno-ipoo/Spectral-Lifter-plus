@@ -113,6 +113,45 @@ enum ProcessingProgressEvent: Sendable, Equatable {
     }
 }
 
+enum DisplayAnalysisTarget: Hashable, Sendable {
+    case input
+    case corrected
+    case mastered
+
+    static let allDisplayTargets: [DisplayAnalysisTarget] = [.input, .corrected, .mastered]
+}
+
+enum DisplayAnalysisKind: String, CaseIterable, Hashable, Sendable {
+    case metrics
+    case spectrogram
+    case preview
+    case noise
+    case correctionAnalysis
+    case masteringAnalysis
+
+    var title: String {
+        switch self {
+        case .metrics: "比較"
+        case .spectrogram: "スペクトログラム"
+        case .preview: "プレビュー"
+        case .noise: "ノイズ確認"
+        case .correctionAnalysis: "補正解析"
+        case .masteringAnalysis: "マスタリング解析"
+        }
+    }
+
+    static func initialStates() -> [DisplayAnalysisKind: DisplayAnalysisState] {
+        Dictionary(uniqueKeysWithValues: allCases.map { ($0, .idle) })
+    }
+}
+
+enum DisplayAnalysisState: Hashable, Sendable {
+    case idle
+    case running
+    case completed
+    case failed
+}
+
 @MainActor
 @Observable
 final class ProcessingJob {
@@ -154,7 +193,9 @@ final class ProcessingJob {
     var skippedMasteringSteps: Set<MasteringStep> = []
     var failedMasteringSteps: Set<MasteringStep> = []
     var masteringActiveStepDetail: String?
-    var isAnalyzingMetrics = false
+    var inputAnalysisStates = DisplayAnalysisKind.initialStates()
+    var outputAnalysisStates = DisplayAnalysisKind.initialStates()
+    var masteredAnalysisStates = DisplayAnalysisKind.initialStates()
     var selectedMasteringProfile: MasteringProfile = .streaming
     var editableMasteringSettings: MasteringSettings = MasteringProfile.streaming.settings
     var isUsingCustomMasteringSettings = false
@@ -198,6 +239,42 @@ final class ProcessingJob {
         return statusMessage
     }
 
+    var isAnalyzingMetrics: Bool {
+        isAnalysisRunning(.metrics)
+    }
+
+    var isAnalyzingSpectrogram: Bool {
+        isAnalysisRunning(.spectrogram)
+    }
+
+    var isAnalyzingNoise: Bool {
+        isAnalysisRunning(.noise)
+    }
+
+    var isAnalyzingDisplayAnalysis: Bool {
+        DisplayAnalysisKind.allCases.contains { isAnalysisRunning($0) }
+    }
+
+    var canUseCorrectedAnalysisForMastering: Bool {
+        outputMasteringAnalysis != nil && outputNoiseMeasurements != nil
+    }
+
+    var displayAnalysisStatusText: String? {
+        let running = DisplayAnalysisKind.allCases
+            .filter { isAnalysisRunning($0) }
+            .map(\.title)
+        guard !running.isEmpty else { return nil }
+        return "\(running.joined(separator: "・"))を更新中"
+    }
+
+    var failedDisplayAnalysisText: String? {
+        let failed = DisplayAnalysisKind.allCases
+            .filter { isAnalysisFailed($0) }
+            .map(\.title)
+        guard !failed.isEmpty else { return nil }
+        return "一部の表示解析を完了できませんでした: \(failed.joined(separator: "・"))"
+    }
+
     func prepareForSelection(_ inputURL: URL) {
         inputFile = inputURL
         outputFile = AudioProcessingService.defaultOutputURL(for: inputURL)
@@ -236,6 +313,7 @@ final class ProcessingJob {
         skippedMasteringSteps = []
         failedMasteringSteps = []
         masteringActiveStepDetail = nil
+        resetAllDisplayAnalysisStates()
         appliedCorrectionSettings = nil
         appliedMasteringSettings = nil
         applyCorrectionProfile(selectedDenoiseStrength)
@@ -261,6 +339,8 @@ final class ProcessingJob {
         denoiseEffectReport = nil
         outputSpectrogram = nil
         masteredSpectrogram = nil
+        resetDisplayAnalysisStates(for: .corrected)
+        resetDisplayAnalysisStates(for: .mastered)
         masteringLogText = ""
         masteringStatusMessage = "補正後に実行できます"
         masteringLastError = nil
@@ -289,6 +369,7 @@ final class ProcessingJob {
         masteredMetrics = nil
         masteredNoiseMeasurements = nil
         masteredSpectrogram = nil
+        resetDisplayAnalysisStates(for: .mastered)
         hasExistingMasteredOutput = false
         appliedMasteringSettings = nil
     }
@@ -324,60 +405,123 @@ final class ProcessingJob {
         isUsingCustomCorrectionSettings = true
     }
 
-    func beginMetricAnalysis() {
-        isAnalyzingMetrics = true
-    }
-
     func finishInputMetricAnalysis(_ metrics: AudioMetricSnapshot) {
         inputMetrics = metrics
-        isAnalyzingMetrics = false
+        finishDisplayAnalysis(.metrics, for: .input)
     }
 
     func finishInputCorrectionAnalysis(_ analysis: AnalysisData, mode: AudioAnalysisMode) {
         inputCorrectionAnalysis = analysis
         inputCorrectionAnalysisMode = mode
+        finishDisplayAnalysis(.correctionAnalysis, for: .input)
     }
 
     func finishInputNoiseMeasurement(_ measurements: NoiseMeasurementSnapshot) {
         inputNoiseMeasurements = measurements
+        finishDisplayAnalysis(.noise, for: .input)
     }
 
     func finishOutputMetricAnalysis(_ metrics: AudioMetricSnapshot) {
         outputMetrics = metrics
-        isAnalyzingMetrics = false
+        finishDisplayAnalysis(.metrics, for: .corrected)
     }
 
     func finishOutputMasteringAnalysis(_ analysis: MasteringAnalysis) {
         outputMasteringAnalysis = analysis
+        finishDisplayAnalysis(.masteringAnalysis, for: .corrected)
+        updateMasteringAvailabilityStatus()
     }
 
     func finishOutputNoiseMeasurement(_ measurements: NoiseMeasurementSnapshot) {
         outputNoiseMeasurements = measurements
+        finishDisplayAnalysis(.noise, for: .corrected)
+        updateMasteringAvailabilityStatus()
     }
 
     func finishMasteredMetricAnalysis(_ metrics: AudioMetricSnapshot) {
         masteredMetrics = metrics
-        isAnalyzingMetrics = false
+        finishDisplayAnalysis(.metrics, for: .mastered)
     }
 
     func finishMasteredNoiseMeasurement(_ measurements: NoiseMeasurementSnapshot) {
         masteredNoiseMeasurements = measurements
+        finishDisplayAnalysis(.noise, for: .mastered)
     }
 
     func finishInputSpectrogram(_ snapshot: SpectrogramSnapshot) {
         inputSpectrogram = snapshot
+        finishDisplayAnalysis(.spectrogram, for: .input)
     }
 
     func finishOutputSpectrogram(_ snapshot: SpectrogramSnapshot) {
         outputSpectrogram = snapshot
+        finishDisplayAnalysis(.spectrogram, for: .corrected)
     }
 
     func finishMasteredSpectrogram(_ snapshot: SpectrogramSnapshot) {
         masteredSpectrogram = snapshot
+        finishDisplayAnalysis(.spectrogram, for: .mastered)
     }
 
-    func failMetricAnalysis() {
-        isAnalyzingMetrics = false
+    func beginDisplayAnalysis(_ kind: DisplayAnalysisKind, for target: DisplayAnalysisTarget) {
+        setDisplayAnalysisState(.running, for: target, kind: kind)
+    }
+
+    func finishDisplayAnalysis(_ kind: DisplayAnalysisKind, for target: DisplayAnalysisTarget) {
+        setDisplayAnalysisState(.completed, for: target, kind: kind)
+    }
+
+    func failDisplayAnalysis(_ kind: DisplayAnalysisKind, for target: DisplayAnalysisTarget) {
+        setDisplayAnalysisState(.failed, for: target, kind: kind)
+    }
+
+    func displayAnalysisState(_ kind: DisplayAnalysisKind, for target: DisplayAnalysisTarget) -> DisplayAnalysisState {
+        switch target {
+        case .input:
+            inputAnalysisStates[kind] ?? .idle
+        case .corrected:
+            outputAnalysisStates[kind] ?? .idle
+        case .mastered:
+            masteredAnalysisStates[kind] ?? .idle
+        }
+    }
+
+    func resetDisplayAnalysisStates(for target: DisplayAnalysisTarget) {
+        switch target {
+        case .input:
+            inputAnalysisStates = DisplayAnalysisKind.initialStates()
+        case .corrected:
+            outputAnalysisStates = DisplayAnalysisKind.initialStates()
+        case .mastered:
+            masteredAnalysisStates = DisplayAnalysisKind.initialStates()
+        }
+    }
+
+    private func resetAllDisplayAnalysisStates() {
+        DisplayAnalysisTarget.allDisplayTargets.forEach { resetDisplayAnalysisStates(for: $0) }
+    }
+
+    private func setDisplayAnalysisState(_ state: DisplayAnalysisState, for target: DisplayAnalysisTarget, kind: DisplayAnalysisKind) {
+        switch target {
+        case .input:
+            inputAnalysisStates[kind] = state
+        case .corrected:
+            outputAnalysisStates[kind] = state
+        case .mastered:
+            masteredAnalysisStates[kind] = state
+        }
+    }
+
+    private func isAnalysisRunning(_ kind: DisplayAnalysisKind) -> Bool {
+        DisplayAnalysisTarget.allDisplayTargets.contains {
+            displayAnalysisState(kind, for: $0) == .running
+        }
+    }
+
+    private func isAnalysisFailed(_ kind: DisplayAnalysisKind) -> Bool {
+        DisplayAnalysisTarget.allDisplayTargets.contains {
+            displayAnalysisState(kind, for: $0) == .failed
+        }
     }
 
     func appendLog(_ message: String) {
@@ -420,7 +564,7 @@ final class ProcessingJob {
         completedSteps = Set(ProcessingStep.allCases).subtracting(skippedSteps)
         activeStep = nil
         activeStepDetail = nil
-        masteringStatusMessage = hasExistingOutput ? "実行できます" : "補正後に実行できます"
+        masteringStatusMessage = hasExistingOutput ? "補正後の解析中" : "補正後に実行できます"
         appliedCorrectionSettings = appliedSettings ?? appliedCorrectionSettings ?? editableCorrectionSettings
     }
 
@@ -467,6 +611,11 @@ final class ProcessingJob {
         masteringActiveStep = nil
         masteringActiveStepDetail = nil
         appendMasteringLog(message)
+    }
+
+    private func updateMasteringAvailabilityStatus() {
+        guard !isMastering, hasExistingOutput else { return }
+        masteringStatusMessage = canUseCorrectedAnalysisForMastering ? "実行できます" : "補正後の解析中"
     }
 
     private func applyProgressEvent(_ event: ProcessingProgressEvent) {
