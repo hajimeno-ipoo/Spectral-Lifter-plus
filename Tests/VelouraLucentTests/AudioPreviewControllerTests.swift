@@ -69,6 +69,55 @@ struct AudioPreviewControllerTests {
     }
 
     @Test
+    func previewCardStatesAreStoredPerTarget() {
+        let controller = AudioPreviewController()
+        let inputSnapshot = AudioPreviewSnapshot(
+            waveform: [0, 0.25, 0],
+            duration: 1,
+            bandLevels: [:],
+            bandLevelDBs: [:]
+        )
+        let correctedSnapshot = AudioPreviewSnapshot(
+            waveform: [0, 0.75, 0],
+            duration: 2,
+            bandLevels: [:],
+            bandLevelDBs: [:]
+        )
+
+        controller.setPreviewSnapshot(inputSnapshot, for: .input, sourceURL: URL(filePath: "/tmp/input.wav"))
+        controller.setPreviewSnapshot(correctedSnapshot, for: .corrected, sourceURL: URL(filePath: "/tmp/corrected.wav"))
+
+        #expect(controller.cardState(for: .input).snapshot?.duration == 1)
+        #expect(controller.cardState(for: .corrected).snapshot?.duration == 2)
+        #expect(controller.cardState(for: .mastered).snapshot == nil)
+    }
+
+    @Test
+    func stoppingOnePreviewCardDoesNotResetOtherCardState() {
+        let controller = AudioPreviewController()
+        let snapshot = AudioPreviewSnapshot(
+            waveform: [0, 0.5, 0],
+            duration: 1,
+            bandLevels: [:],
+            bandLevelDBs: [:]
+        )
+
+        controller.setPreviewSnapshot(snapshot, for: .input, sourceURL: URL(filePath: "/tmp/input.wav"))
+        controller.setPreviewSnapshot(snapshot, for: .corrected, sourceURL: URL(filePath: "/tmp/corrected.wav"))
+        controller.cardState(for: .input).playbackProgress = 0.4
+        controller.cardState(for: .input).playbackPosition = 0.4
+        controller.cardState(for: .corrected).playbackProgress = 0.7
+        controller.cardState(for: .corrected).playbackPosition = 0.7
+
+        controller.stopPlayback(target: .input)
+
+        #expect(controller.cardState(for: .input).playbackProgress == 0)
+        #expect(controller.cardState(for: .input).playbackPosition == 0)
+        #expect(controller.cardState(for: .corrected).playbackProgress == 0.7)
+        #expect(controller.cardState(for: .corrected).playbackPosition == 0.7)
+    }
+
+    @Test
     func preparePreviewCanSkipLoudnessMeasurementWhenAnalysisWillProvideIt() async throws {
         let fixture = try makePreviewFixture()
         defer {

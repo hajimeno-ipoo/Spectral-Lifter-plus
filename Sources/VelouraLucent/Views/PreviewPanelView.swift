@@ -21,9 +21,39 @@ struct PreviewPanelView: View {
             comparisonControlSection
 
             HStack(spacing: 14) {
-                previewCard(title: "入力音声", target: .input, fileURL: inputFileURL, tint: .blue)
-                previewCard(title: "補正後", target: .corrected, fileURL: correctedFileURL, tint: .green)
-                previewCard(title: "最終版", target: .mastered, fileURL: masteredFileURL, tint: .orange)
+                PreviewCardView(
+                    title: "入力音声",
+                    state: preview.cardState(for: .input),
+                    fileURL: inputFileURL,
+                    tint: .blue,
+                    isActive: preview.activeTarget == .input,
+                    comparisonBadge: comparisonBadge(for: .input),
+                    onPlay: { preview.startPlayback(for: inputFileURL, target: .input) },
+                    onPause: { preview.pausePlayback(target: .input) },
+                    onStop: { preview.stopPlayback(target: .input) }
+                )
+                PreviewCardView(
+                    title: "補正後",
+                    state: preview.cardState(for: .corrected),
+                    fileURL: correctedFileURL,
+                    tint: .green,
+                    isActive: preview.activeTarget == .corrected,
+                    comparisonBadge: comparisonBadge(for: .corrected),
+                    onPlay: { preview.startPlayback(for: correctedFileURL, target: .corrected) },
+                    onPause: { preview.pausePlayback(target: .corrected) },
+                    onStop: { preview.stopPlayback(target: .corrected) }
+                )
+                PreviewCardView(
+                    title: "最終版",
+                    state: preview.cardState(for: .mastered),
+                    fileURL: masteredFileURL,
+                    tint: .orange,
+                    isActive: preview.activeTarget == .mastered,
+                    comparisonBadge: comparisonBadge(for: .mastered),
+                    onPlay: { preview.startPlayback(for: masteredFileURL, target: .mastered) },
+                    onPause: { preview.pausePlayback(target: .mastered) },
+                    onStop: { preview.stopPlayback(target: .mastered) }
+                )
             }
         }
     }
@@ -104,28 +134,62 @@ struct PreviewPanelView: View {
         }
     }
 
-    private func previewCard(title: String, target: AudioPreviewTarget, fileURL: URL?, tint: Color) -> some View {
-        let snapshot = preview.snapshot(for: target)
-        let liveBands = preview.liveBandLevels[target] ?? AudioBandCatalog.previewBands.map {
-            LiveBandSample(id: $0.id, label: $0.label, level: 0)
-        }
-        let isActive = preview.activeTarget == target
+    private func comparisonBadge(for target: AudioPreviewTarget) -> String? {
         let comparisonSide = preview.comparisonSide(for: target)
-        let playbackState = preview.playbackState(for: target)
+        guard let comparisonSide, preview.isInComparisonPair(target) else { return nil }
+        return preview.comparisonPair.title(for: comparisonSide)
+    }
 
-        return VStack(alignment: .leading, spacing: 10) {
+    private func comparisonFileURL(for side: AudioComparisonSide) -> URL? {
+        switch preview.comparisonTarget(for: side) {
+        case .input:
+            return inputFileURL
+        case .corrected:
+            return correctedFileURL
+        case .mastered:
+            return masteredFileURL
+        }
+    }
+
+    private func binding<Value>(get: @escaping @MainActor () -> Value, set: @escaping @MainActor (Value) -> Void) -> Binding<Value> {
+        Binding(
+            get: { @MainActor in get() },
+            set: { @MainActor newValue in set(newValue) }
+        )
+    }
+}
+
+private struct PreviewCardView: View {
+    let title: String
+    let state: AudioPreviewCardState
+    let fileURL: URL?
+    let tint: Color
+    let isActive: Bool
+    let comparisonBadge: String?
+    let onPlay: () -> Void
+    let onPause: () -> Void
+    let onStop: () -> Void
+
+    var body: some View {
+        let snapshot = state.snapshot ?? emptySnapshot
+        let liveBands = state.liveBandLevels.isEmpty
+            ? AudioBandCatalog.previewBands.map { LiveBandSample(id: $0.id, label: $0.label, level: 0) }
+            : state.liveBandLevels
+        let playbackState = state.playbackState
+
+        VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text(title)
                     .font(.headline)
-                if let comparisonSide, preview.isInComparisonPair(target) {
-                    Text(preview.comparisonPair.title(for: comparisonSide))
+                if let comparisonBadge {
+                    Text(comparisonBadge)
                         .font(.caption.bold())
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
                         .background(Capsule().fill(isActive ? tint.opacity(0.22) : Color.secondary.opacity(0.12)))
                 }
                 Spacer()
-                Text(preview.playbackTimeText(for: target))
+                Text(playbackTimeText(snapshot: snapshot))
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
@@ -134,7 +198,7 @@ struct PreviewPanelView: View {
                 .lineLimit(2)
                 .foregroundStyle(fileURL == nil ? .secondary : .primary)
 
-            waveformPreview(snapshot: snapshot, tint: tint, progress: preview.playbackProgress(for: target))
+            waveformPreview(snapshot: snapshot, tint: tint, progress: state.playbackProgress)
 
             VStack(spacing: 6) {
                 ForEach(liveBands) { band in
@@ -159,19 +223,13 @@ struct PreviewPanelView: View {
             }
 
             HStack(spacing: 8) {
-                Button(primaryPlaybackButtonTitle(for: target)) {
-                    preview.startPlayback(for: fileURL, target: target)
-                }
+                Button(primaryPlaybackButtonTitle(for: playbackState), action: onPlay)
                 .disabled(fileURL == nil || playbackState == .playing)
 
-                Button("一時停止") {
-                    preview.pausePlayback(target: target)
-                }
+                Button("一時停止", action: onPause)
                 .disabled(playbackState != .playing)
 
-                Button("停止") {
-                    preview.stopPlayback(target: target)
-                }
+                Button("停止", action: onStop)
                 .disabled(fileURL == nil || playbackState == .stopped)
 
                 if let fileURL {
@@ -193,8 +251,17 @@ struct PreviewPanelView: View {
         )
     }
 
-    private func primaryPlaybackButtonTitle(for target: AudioPreviewTarget) -> String {
-        switch preview.playbackState(for: target) {
+    private var emptySnapshot: AudioPreviewSnapshot {
+        AudioPreviewSnapshot(
+            waveform: Array(repeating: 0, count: AudioFileService.previewBucketCount),
+            duration: 0,
+            bandLevels: Dictionary(uniqueKeysWithValues: AudioBandCatalog.previewBands.map { ($0.id, Array(repeating: 0, count: AudioFileService.previewBucketCount)) }),
+            bandLevelDBs: Dictionary(uniqueKeysWithValues: AudioBandCatalog.previewBands.map { ($0.id, Array(repeating: Float(-120), count: AudioFileService.previewBucketCount)) })
+        )
+    }
+
+    private func primaryPlaybackButtonTitle(for playbackState: AudioPlaybackState) -> String {
+        switch playbackState {
         case .paused:
             return "再開"
         case .playing, .stopped:
@@ -245,21 +312,17 @@ struct PreviewPanelView: View {
         .frame(height: 54)
     }
 
-    private func comparisonFileURL(for side: AudioComparisonSide) -> URL? {
-        switch preview.comparisonTarget(for: side) {
-        case .input:
-            return inputFileURL
-        case .corrected:
-            return correctedFileURL
-        case .mastered:
-            return masteredFileURL
+    private func playbackTimeText(snapshot: AudioPreviewSnapshot) -> String {
+        guard snapshot.duration > 0 else {
+            return "--:-- / --:--"
         }
+        return "\(format(duration: state.playbackPosition)) / \(format(duration: snapshot.duration))"
     }
 
-    private func binding<Value>(get: @escaping @MainActor () -> Value, set: @escaping @MainActor (Value) -> Void) -> Binding<Value> {
-        Binding(
-            get: { @MainActor in get() },
-            set: { @MainActor newValue in set(newValue) }
-        )
+    private func format(duration: TimeInterval) -> String {
+        let totalSeconds = Int(duration.rounded())
+        let minutes = totalSeconds / 60
+        let seconds = totalSeconds % 60
+        return String(format: "%02d:%02d", minutes, seconds)
     }
 }

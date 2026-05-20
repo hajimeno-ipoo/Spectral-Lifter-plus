@@ -1,7 +1,7 @@
 import AVFoundation
 import Foundation
 
-enum AudioPreviewTarget: String {
+enum AudioPreviewTarget: String, CaseIterable {
     case input = "入力"
     case corrected = "補正後"
     case mastered = "最終版"
@@ -15,23 +15,49 @@ enum AudioPlaybackState {
 
 @MainActor
 @Observable
+final class AudioPreviewCardState {
+    let target: AudioPreviewTarget
+    var sourceURL: URL?
+    var snapshot: AudioPreviewSnapshot?
+    var liveBandLevels: [LiveBandSample] = []
+    var playbackProgress: Double = 0
+    var playbackPosition: TimeInterval = 0
+    var playbackState: AudioPlaybackState = .stopped
+
+    init(target: AudioPreviewTarget) {
+        self.target = target
+    }
+}
+
+@MainActor
+@Observable
 final class AudioPreviewController: NSObject, AVAudioPlayerDelegate {
     var activeTarget: AudioPreviewTarget?
     var playbackLabel = "未再生"
     var playbackVolume: Float = 1.0
-    var previewSnapshots: [AudioPreviewTarget: AudioPreviewSnapshot] = [:]
-    var liveBandLevels: [AudioPreviewTarget: [LiveBandSample]] = [:]
     var comparisonPair: AudioComparisonPair = .correctedVsMastered
     var activeComparisonSide: AudioComparisonSide = .a
     var isLoudnessMatchedComparisonEnabled = false
+    let inputCardState = AudioPreviewCardState(target: .input)
+    let correctedCardState = AudioPreviewCardState(target: .corrected)
+    let masteredCardState = AudioPreviewCardState(target: .mastered)
+
+    var previewSnapshots: [AudioPreviewTarget: AudioPreviewSnapshot] {
+        Dictionary(uniqueKeysWithValues: AudioPreviewTarget.allCases.compactMap { target in
+            guard let snapshot = cardState(for: target).snapshot else { return nil }
+            return (target, snapshot)
+        })
+    }
+
+    var liveBandLevels: [AudioPreviewTarget: [LiveBandSample]] {
+        Dictionary(uniqueKeysWithValues: AudioPreviewTarget.allCases.map { target in
+            (target, cardState(for: target).liveBandLevels)
+        })
+    }
 
     private var player: AVAudioPlayer?
     private var meterTimer: Timer?
-    private var previewSourceURLs: [AudioPreviewTarget: URL] = [:]
     private var previewTasks: [AudioPreviewTarget: Task<Void, Never>] = [:]
-    private var playbackPositions: [AudioPreviewTarget: TimeInterval] = [:]
-    private var playbackProgresses: [AudioPreviewTarget: Double] = [:]
-    private var playbackStates: [AudioPreviewTarget: AudioPlaybackState] = [:]
     private var integratedLoudnessByTarget: [AudioPreviewTarget: Float] = [:]
     private let meterInterval: TimeInterval = 0.05
     private let smoothingFactor = 0.25
@@ -52,13 +78,14 @@ final class AudioPreviewController: NSObject, AVAudioPlayerDelegate {
             player?.isMeteringEnabled = true
             player?.prepareToPlay()
             player?.volume = effectivePlaybackVolume(for: target)
-            let resumeTime = playbackPositions[target] ?? 0
+            let targetState = cardState(for: target)
+            let resumeTime = targetState.playbackPosition
             if let player {
                 player.currentTime = min(resumeTime, max(player.duration - 0.05, 0))
             }
             player?.play()
             activeTarget = target
-            playbackStates[target] = .playing
+            targetState.playbackState = .playing
             if let comparisonSide = comparisonSide(for: target) {
                 activeComparisonSide = comparisonSide
                 playbackLabel = "\(comparisonPair.title(for: comparisonSide)) \(target.rawValue)を再生中"
@@ -66,7 +93,7 @@ final class AudioPreviewController: NSObject, AVAudioPlayerDelegate {
                 playbackLabel = "\(target.rawValue)を再生中"
             }
             let progress = player?.duration == 0 ? 0 : max(0, min(1, (player?.currentTime ?? 0) / (player?.duration ?? 1)))
-            playbackProgresses[target] = progress
+            targetState.playbackProgress = progress
             startMetering(target: target)
         } catch {
             stopPlayback(target: target)
@@ -77,7 +104,7 @@ final class AudioPreviewController: NSObject, AVAudioPlayerDelegate {
     func playComparisonSide(_ side: AudioComparisonSide) {
         activeComparisonSide = side
         let target = comparisonTarget(for: side)
-        startPlayback(for: previewSourceURLs[target], target: target)
+        startPlayback(for: cardState(for: target).sourceURL, target: target)
     }
 
     func toggleComparisonSide() {
@@ -129,12 +156,13 @@ final class AudioPreviewController: NSObject, AVAudioPlayerDelegate {
 
     func pausePlayback(target: AudioPreviewTarget) {
         guard activeTarget == target, let player else { return }
-        playbackPositions[target] = player.currentTime
-        playbackProgresses[target] = player.duration > 0 ? max(0, min(1, player.currentTime / player.duration)) : 0
+        let targetState = cardState(for: target)
+        targetState.playbackPosition = player.currentTime
+        targetState.playbackProgress = player.duration > 0 ? max(0, min(1, player.currentTime / player.duration)) : 0
         meterTimer?.invalidate()
         meterTimer = nil
         player.pause()
-        playbackStates[target] = .paused
+        targetState.playbackState = .paused
         playbackLabel = "\(target.rawValue)を一時停止中"
     }
 
@@ -153,11 +181,12 @@ final class AudioPreviewController: NSObject, AVAudioPlayerDelegate {
             activeTarget = nil
         }
 
-        playbackPositions[resolvedTarget] = 0
-        playbackProgresses[resolvedTarget] = 0
-        playbackStates[resolvedTarget] = .stopped
-        if let snapshot = previewSnapshots[resolvedTarget] {
-            liveBandLevels[resolvedTarget] = makeInitialLiveBandLevels(from: snapshot, target: resolvedTarget)
+        let resolvedState = cardState(for: resolvedTarget)
+        resolvedState.playbackPosition = 0
+        resolvedState.playbackProgress = 0
+        resolvedState.playbackState = .stopped
+        if let snapshot = resolvedState.snapshot {
+            resolvedState.liveBandLevels = makeInitialLiveBandLevels(from: snapshot, target: resolvedTarget)
         }
         playbackLabel = "停止中"
     }
@@ -167,29 +196,31 @@ final class AudioPreviewController: NSObject, AVAudioPlayerDelegate {
 
         guard let url else {
             previewTasks[target] = nil
-            previewSourceURLs[target] = nil
-            previewSnapshots[target] = nil
-            liveBandLevels[target] = nil
+            let targetState = cardState(for: target)
+            targetState.sourceURL = nil
+            targetState.snapshot = nil
+            targetState.liveBandLevels = []
             integratedLoudnessByTarget[target] = nil
-            playbackPositions[target] = 0
-            playbackProgresses[target] = 0
-            playbackStates[target] = .stopped
+            targetState.playbackPosition = 0
+            targetState.playbackProgress = 0
+            targetState.playbackState = .stopped
             if activeTarget == target {
                 activeTarget = nil
             }
             return
         }
 
-        if previewSourceURLs[target] == url, previewSnapshots[target] != nil {
+        let targetState = cardState(for: target)
+        if targetState.sourceURL == url, targetState.snapshot != nil {
             if measureLoudness, integratedLoudnessByTarget[target] == nil {
                 prepareLoudness(for: url, target: target)
             }
             return
         }
 
-        previewSourceURLs[target] = url
-        previewSnapshots[target] = nil
-        liveBandLevels[target] = nil
+        targetState.sourceURL = url
+        targetState.snapshot = nil
+        targetState.liveBandLevels = []
         integratedLoudnessByTarget[target] = nil
 
         previewTasks[target] = Task {
@@ -201,7 +232,7 @@ final class AudioPreviewController: NSObject, AVAudioPlayerDelegate {
             }.value
 
             guard !Task.isCancelled else { return }
-            guard previewSourceURLs[target] == url else { return }
+            guard self.cardState(for: target).sourceURL == url else { return }
             if let preview {
                 if let loudness = preview.1 {
                     integratedLoudnessByTarget[target] = loudness
@@ -220,7 +251,7 @@ final class AudioPreviewController: NSObject, AVAudioPlayerDelegate {
             }.value
 
             guard !Task.isCancelled else { return }
-            guard previewSourceURLs[target] == url else { return }
+            guard self.cardState(for: target).sourceURL == url else { return }
             if let loudness {
                 integratedLoudnessByTarget[target] = loudness
                 refreshPlaybackVolumeIfNeeded()
@@ -230,13 +261,11 @@ final class AudioPreviewController: NSObject, AVAudioPlayerDelegate {
     }
 
     func setPreviewSnapshot(_ snapshot: AudioPreviewSnapshot, for target: AudioPreviewTarget, sourceURL: URL, integratedLoudnessLUFS: Double? = nil) {
-        previewSourceURLs[target] = sourceURL
-        previewSnapshots[target] = snapshot
-        playbackProgresses[target] = normalizedProgress(for: target, duration: snapshot.duration)
-        if playbackStates[target] == nil {
-            playbackStates[target] = .stopped
-        }
-        liveBandLevels[target] = makeInitialLiveBandLevels(from: snapshot, target: target)
+        let targetState = cardState(for: target)
+        targetState.sourceURL = sourceURL
+        targetState.snapshot = snapshot
+        targetState.playbackProgress = normalizedProgress(for: target, duration: snapshot.duration)
+        targetState.liveBandLevels = makeInitialLiveBandLevels(from: snapshot, target: target)
         if let integratedLoudnessLUFS {
             setIntegratedLoudnessLUFS(integratedLoudnessLUFS, for: target)
         }
@@ -252,29 +281,30 @@ final class AudioPreviewController: NSObject, AVAudioPlayerDelegate {
     }
 
     func durationText(for target: AudioPreviewTarget) -> String {
-        if let snapshot = previewSnapshots[target], snapshot.duration > 0 {
+        if let snapshot = cardState(for: target).snapshot, snapshot.duration > 0 {
             return format(duration: snapshot.duration)
         }
         return "--:--"
     }
 
     func playbackTimeText(for target: AudioPreviewTarget) -> String {
-        guard let snapshot = previewSnapshots[target], snapshot.duration > 0 else {
+        let targetState = cardState(for: target)
+        guard let snapshot = targetState.snapshot, snapshot.duration > 0 else {
             return "--:-- / --:--"
         }
 
         let elapsed: TimeInterval
         if activeTarget == target {
-            elapsed = player?.currentTime ?? playbackPositions[target] ?? 0
+            elapsed = player?.currentTime ?? targetState.playbackPosition
         } else {
-            elapsed = playbackPositions[target] ?? 0
+            elapsed = targetState.playbackPosition
         }
 
         return "\(format(duration: elapsed)) / \(format(duration: snapshot.duration))"
     }
 
     func snapshot(for target: AudioPreviewTarget) -> AudioPreviewSnapshot {
-        previewSnapshots[target] ?? AudioPreviewSnapshot(
+        cardState(for: target).snapshot ?? AudioPreviewSnapshot(
             waveform: Array(repeating: 0, count: AudioFileService.previewBucketCount),
             duration: 0,
             bandLevels: Dictionary(uniqueKeysWithValues: AudioBandCatalog.previewBands.map { ($0.id, Array(repeating: 0, count: AudioFileService.previewBucketCount)) }),
@@ -304,19 +334,21 @@ final class AudioPreviewController: NSObject, AVAudioPlayerDelegate {
 
         if player.duration > 0 {
             let progress = max(0, min(1, player.currentTime / player.duration))
-            playbackProgresses[target] = progress
-            playbackPositions[target] = player.currentTime
+            let targetState = cardState(for: target)
+            targetState.playbackProgress = progress
+            targetState.playbackPosition = player.currentTime
         }
 
         let snapshot = snapshot(for: target)
         let bucketIndex = min(
-            max(Int(round((playbackProgresses[target] ?? 0) * Double(max(snapshot.waveform.count - 1, 0)))), 0),
+            max(Int(round(cardState(for: target).playbackProgress * Double(max(snapshot.waveform.count - 1, 0)))), 0),
             max(snapshot.waveform.count - 1, 0)
         )
 
         if let sharedLevels = sharedComparisonLevels(for: target, bucketIndex: bucketIndex) {
-            let previousLevels = Dictionary(uniqueKeysWithValues: (liveBandLevels[target] ?? []).map { ($0.id, $0.level) })
-            liveBandLevels[target] = sharedLevels.map { sample in
+            let targetState = cardState(for: target)
+            let previousLevels = Dictionary(uniqueKeysWithValues: targetState.liveBandLevels.map { ($0.id, $0.level) })
+            targetState.liveBandLevels = sharedLevels.map { sample in
                 let previousLevel = previousLevels[sample.id] ?? sample.level
                 let smoothedLevel = previousLevel + (sample.level - previousLevel) * smoothingFactor
                 return LiveBandSample(id: sample.id, label: sample.label, level: smoothedLevel)
@@ -324,8 +356,9 @@ final class AudioPreviewController: NSObject, AVAudioPlayerDelegate {
             return
         }
 
-        let previousLevels = Dictionary(uniqueKeysWithValues: (liveBandLevels[target] ?? []).map { ($0.id, $0.level) })
-        liveBandLevels[target] = AudioBandCatalog.previewBands.map { band in
+        let targetState = cardState(for: target)
+        let previousLevels = Dictionary(uniqueKeysWithValues: targetState.liveBandLevels.map { ($0.id, $0.level) })
+        targetState.liveBandLevels = AudioBandCatalog.previewBands.map { band in
             let targetLevel = Double(snapshot.bandLevels[band.id]?[bucketIndex] ?? 0)
             let previousLevel = previousLevels[band.id] ?? targetLevel
             let smoothedLevel = previousLevel + (targetLevel - previousLevel) * smoothingFactor
@@ -338,8 +371,8 @@ final class AudioPreviewController: NSObject, AVAudioPlayerDelegate {
             return nil
         }
         let comparisonTarget = comparisonPair.firstTarget == target ? comparisonPair.secondTarget : comparisonPair.firstTarget
-        let targetSnapshot = previewSnapshots[target]
-        let comparisonSnapshot = previewSnapshots[comparisonTarget]
+        let targetSnapshot = cardState(for: target).snapshot
+        let comparisonSnapshot = cardState(for: comparisonTarget).snapshot
         guard
             let targetSnapshot,
             let comparisonSnapshot,
@@ -392,14 +425,15 @@ final class AudioPreviewController: NSObject, AVAudioPlayerDelegate {
 
     private func storeCurrentPlaybackPosition() {
         guard let activeTarget, let player else { return }
-        playbackPositions[activeTarget] = player.currentTime
-        playbackProgresses[activeTarget] = player.duration > 0 ? max(0, min(1, player.currentTime / player.duration)) : 0
+        let targetState = cardState(for: activeTarget)
+        targetState.playbackPosition = player.currentTime
+        targetState.playbackProgress = player.duration > 0 ? max(0, min(1, player.currentTime / player.duration)) : 0
     }
 
     private func makeInitialLiveBandLevels(from snapshot: AudioPreviewSnapshot, target: AudioPreviewTarget) -> [LiveBandSample] {
         let bucketIndex: Int
         if snapshot.duration > 0 {
-            let progress = min(max((playbackPositions[target] ?? 0) / snapshot.duration, 0), 1)
+            let progress = min(max(cardState(for: target).playbackPosition / snapshot.duration, 0), 1)
             bucketIndex = min(
                 max(Int(round(progress * Double(max(snapshot.waveform.count - 1, 0)))), 0),
                 max(snapshot.waveform.count - 1, 0)
@@ -418,22 +452,23 @@ final class AudioPreviewController: NSObject, AVAudioPlayerDelegate {
         if activeTarget == target, let player, player.duration > 0 {
             return max(0, min(1, player.currentTime / player.duration))
         }
-        return playbackProgresses[target] ?? 0
+        return cardState(for: target).playbackProgress
     }
 
     func playbackState(for target: AudioPreviewTarget) -> AudioPlaybackState {
-        playbackStates[target] ?? .stopped
+        cardState(for: target).playbackState
     }
 
     private func transitionAwayFromCurrentTarget(keepingPosition: Bool) {
         guard let activeTarget else { return }
+        let activeState = cardState(for: activeTarget)
         if keepingPosition {
             storeCurrentPlaybackPosition()
-            playbackStates[activeTarget] = .paused
+            activeState.playbackState = .paused
         } else {
-            playbackPositions[activeTarget] = 0
-            playbackProgresses[activeTarget] = 0
-            playbackStates[activeTarget] = .stopped
+            activeState.playbackPosition = 0
+            activeState.playbackProgress = 0
+            activeState.playbackState = .stopped
         }
         meterTimer?.invalidate()
         meterTimer = nil
@@ -474,22 +509,35 @@ final class AudioPreviewController: NSObject, AVAudioPlayerDelegate {
         guard isInComparisonPair(target) else { return }
 
         if let activeTarget, isInComparisonPair(activeTarget), activeTarget != target {
-            let currentTime = player?.currentTime ?? playbackPositions[activeTarget] ?? 0
-            playbackPositions[activeTarget] = currentTime
-            playbackProgresses[activeTarget] = player?.duration ?? 0 > 0 ? currentTime / max(player?.duration ?? 1, 1) : 0
-            playbackPositions[target] = currentTime
+            let currentTime = player?.currentTime ?? cardState(for: activeTarget).playbackPosition
+            let activeState = cardState(for: activeTarget)
+            activeState.playbackPosition = currentTime
+            activeState.playbackProgress = player?.duration ?? 0 > 0 ? currentTime / max(player?.duration ?? 1, 1) : 0
+            cardState(for: target).playbackPosition = currentTime
             return
         }
 
         let pairedTarget = comparisonPair.firstTarget == target ? comparisonPair.secondTarget : comparisonPair.firstTarget
-        if let pairedPosition = playbackPositions[pairedTarget], pairedPosition > 0 {
-            playbackPositions[target] = pairedPosition
+        let pairedPosition = cardState(for: pairedTarget).playbackPosition
+        if pairedPosition > 0 {
+            cardState(for: target).playbackPosition = pairedPosition
         }
     }
 
     private func normalizedProgress(for target: AudioPreviewTarget, duration: TimeInterval) -> Double {
         guard duration > 0 else { return 0 }
-        return min(max((playbackPositions[target] ?? 0) / duration, 0), 1)
+        return min(max(cardState(for: target).playbackPosition / duration, 0), 1)
+    }
+
+    func cardState(for target: AudioPreviewTarget) -> AudioPreviewCardState {
+        switch target {
+        case .input:
+            return inputCardState
+        case .corrected:
+            return correctedCardState
+        case .mastered:
+            return masteredCardState
+        }
     }
 
     private func format(duration: TimeInterval) -> String {
