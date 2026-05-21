@@ -224,19 +224,39 @@ struct ContentView: View {
 
             VStack(alignment: .trailing, spacing: 4) {
                 Text(statusText)
+                    .font(.body.weight(.semibold))
                     .foregroundStyle(statusColor)
                 Text(captionText)
-                    .font(.caption)
+                    .font(.body)
                     .foregroundStyle(.secondary)
             }
         }
     }
 
     private var progressSection: some View {
+        Group {
+            if job.isProcessing || job.isMastering {
+                TimelineView(.periodic(from: .now, by: 1)) { timeline in
+                    progressContent(now: timeline.date)
+                }
+            } else {
+                progressContent(now: .now)
+            }
+        }
+    }
+
+    private func progressContent(now: Date) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             progressBlock(
                 title: "補正の進行状況",
                 status: job.progressLabel,
+                elapsedText: elapsedProcessingText(
+                    startedAt: job.processingStartedAt,
+                    finishedAt: job.processingFinishedAt,
+                    isRunning: job.isProcessing,
+                    didComplete: job.statusMessage == "完了",
+                    now: now
+                ),
                 tint: correctionStatusColor,
                 value: job.progressValue,
                 steps: ProcessingStep.allCases,
@@ -246,13 +266,14 @@ struct ContentView: View {
                 failedSteps: job.failedSteps
             )
 
-            masteringProgressBlock
+            masteringProgressBlock(now: now)
         }
     }
 
     private func progressBlock(
         title: String,
         status: String,
+        elapsedText: String?,
         tint: Color,
         value: Double,
         steps: [ProcessingStep],
@@ -266,9 +287,16 @@ struct ContentView: View {
                 Text(title)
                     .font(.headline)
                 Spacer()
-                Text(status)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(status)
+                        .font(.body)
+                        .foregroundStyle(.secondary)
+                    if let elapsedText {
+                        Text(elapsedText)
+                            .font(.title3.monospacedDigit().weight(.bold))
+                            .foregroundStyle(tint)
+                    }
+                }
             }
 
             ProgressView(value: value)
@@ -288,15 +316,28 @@ struct ContentView: View {
         }
     }
 
-    private var masteringProgressBlock: some View {
+    private func masteringProgressBlock(now: Date) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text("マスタリングの進行状況")
                     .font(.headline)
                 Spacer()
-                Text(masteringProgressLabel)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(masteringProgressLabel)
+                        .font(.body)
+                        .foregroundStyle(.secondary)
+                    if let elapsedText = elapsedProcessingText(
+                        startedAt: job.masteringStartedAt,
+                        finishedAt: job.masteringFinishedAt,
+                        isRunning: job.isMastering,
+                        didComplete: job.masteringStatusMessage == "完了",
+                        now: now
+                    ) {
+                        Text(elapsedText)
+                            .font(.title3.monospacedDigit().weight(.bold))
+                            .foregroundStyle(masteringStatusColor)
+                    }
+                }
             }
 
             ProgressView(value: masteringProgressValue)
@@ -321,10 +362,10 @@ struct ContentView: View {
             Image(systemName: isFailed ? "xmark.circle.fill" : isSkipped ? "minus.circle.fill" : isCompleted ? "checkmark.circle.fill" : isActive ? "dot.circle.fill" : "circle")
                 .foregroundStyle(isFailed ? Color.red : isSkipped ? Color.secondary : isCompleted ? Color.green : isActive ? Color.orange : Color.secondary)
             Text(title)
-                .font(.caption)
+                .font(.body.weight(.semibold))
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
         .background(
             Capsule()
                 .fill(isFailed ? Color.red.opacity(0.12) : isActive ? Color.orange.opacity(0.14) : isCompleted ? Color.green.opacity(0.14) : Color.secondary.opacity(isSkipped ? 0.14 : 0.08))
@@ -392,13 +433,13 @@ struct ContentView: View {
                     .font(.headline)
                 Spacer()
                 Text(qualityReportSeverityText(report.severity))
-                    .font(.caption.weight(.semibold))
+                    .font(.callout.weight(.semibold))
                     .foregroundStyle(qualityReportSeverityColor(report.severity))
             }
 
             if report.items.isEmpty {
                 Text("大きな音量低下、ピーク超過、高域の増えすぎ・下がりすぎ、ステレオ幅の急変は見つかっていません。")
-                    .font(.subheadline)
+                    .font(.body)
                     .foregroundStyle(.secondary)
             } else {
                 VStack(alignment: .leading, spacing: 8) {
@@ -410,9 +451,9 @@ struct ContentView: View {
                                 .padding(.top, 6)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(item.title)
-                                    .font(.subheadline.weight(.semibold))
+                                    .font(.body.weight(.semibold))
                                 Text(item.detail)
-                                    .font(.caption)
+                                    .font(.body)
                                     .foregroundStyle(.secondary)
                             }
                         }
@@ -751,10 +792,10 @@ struct ContentView: View {
                     VStack(alignment: .leading, spacing: 5) {
                         HStack(alignment: .firstTextBaseline) {
                             Text(row.title)
-                                .font(.subheadline.weight(.semibold))
+                                .font(.title3.weight(.semibold))
                             Spacer()
                             Text(row.finalValue)
-                                .font(.subheadline.monospacedDigit().weight(.semibold))
+                                .font(.title3.monospacedDigit().weight(.semibold))
                                 .foregroundStyle(row.tint)
                         }
                         HStack(spacing: 10) {
@@ -762,7 +803,7 @@ struct ContentView: View {
                             directionDeltaChip(title: "仕上げ差", value: row.masteringDeltaText, tint: row.masteringTint)
                         }
                         Text(row.detail)
-                            .font(.caption)
+                            .font(.body)
                             .foregroundStyle(.secondary)
                     }
                     .padding(10)
@@ -780,10 +821,10 @@ struct ContentView: View {
             Text(title)
                 .foregroundStyle(.secondary)
             Text(value)
-                .font(.caption.monospacedDigit().weight(.semibold))
+                .font(.body.monospacedDigit().weight(.semibold))
                 .foregroundStyle(tint)
         }
-        .font(.caption)
+        .font(.body)
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
         .background(tint.opacity(0.10), in: Capsule())
@@ -1578,11 +1619,11 @@ struct ContentView: View {
         return VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Text(title)
-                    .font(.caption)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
                 Spacer()
                 Text(value.map { formattedValue($0, format: .dB) } ?? "--")
-                    .font(.caption.monospacedDigit())
+                    .font(.callout.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
 
@@ -1702,7 +1743,7 @@ struct ContentView: View {
     private func termHelpGrid(items: [TermDefinition]) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("用語ガイド")
-                .font(.caption.weight(.semibold))
+                .font(.callout.weight(.semibold))
                 .foregroundStyle(.secondary)
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 8) {
                 ForEach(items) { item in
@@ -1860,7 +1901,7 @@ struct ContentView: View {
                 isPresented.toggle()
             } label: {
                 Image(systemName: "questionmark.circle")
-                    .font(.caption)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
@@ -1869,14 +1910,14 @@ struct ContentView: View {
                     Text(title)
                         .font(.headline)
                     Text(reading)
-                        .font(.caption)
+                        .font(.callout)
                         .foregroundStyle(.secondary)
                     Text(description)
-                        .font(.subheadline)
+                        .font(.body)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .padding(14)
-                .frame(width: 260, alignment: .leading)
+                .frame(width: 360, alignment: .leading)
             }
         }
     }
@@ -2071,6 +2112,38 @@ struct ContentView: View {
             return "\(step.title) を実行中"
         }
         return job.masteringStatusMessage
+    }
+
+    private func elapsedProcessingText(
+        startedAt: Date?,
+        finishedAt: Date?,
+        isRunning: Bool,
+        didComplete: Bool,
+        now: Date
+    ) -> String? {
+        guard let startedAt else { return nil }
+        let endDate = isRunning ? now : (finishedAt ?? now)
+        let elapsedSeconds = max(0, Int(endDate.timeIntervalSince(startedAt)))
+        let prefix: String
+        if isRunning {
+            prefix = "経過"
+        } else {
+            prefix = didComplete ? "完了" : "停止"
+        }
+        return "\(prefix) \(formattedElapsedTime(elapsedSeconds))"
+    }
+
+    private func formattedElapsedTime(_ seconds: Int) -> String {
+        let hours = seconds / 3_600
+        let minutes = (seconds % 3_600) / 60
+        let remainingSeconds = seconds % 60
+        if hours > 0 {
+            return "\(hours)時間\(minutes)分\(remainingSeconds)秒"
+        }
+        if minutes > 0 {
+            return "\(minutes)分\(remainingSeconds)秒"
+        }
+        return "\(remainingSeconds)秒"
     }
 
     private func startCorrectionProcessing() {

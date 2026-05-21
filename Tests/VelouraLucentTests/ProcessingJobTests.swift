@@ -60,6 +60,32 @@ struct ProcessingJobTests {
     }
 
     @Test
+    func processingElapsedTimeStopsOnSuccess() {
+        let job = ProcessingJob()
+        let output = URL(fileURLWithPath: "/tmp/output.wav")
+
+        job.beginProcessing()
+        #expect(job.processingStartedAt != nil)
+        #expect(job.processingFinishedAt == nil)
+
+        job.finishSuccess(output)
+
+        #expect(job.processingFinishedAt != nil)
+        #expect(job.processingFinishedAt! >= job.processingStartedAt!)
+    }
+
+    @Test
+    func processingElapsedTimeStopsOnFailure() {
+        let job = ProcessingJob()
+
+        job.beginProcessing()
+        job.finishFailure("テスト失敗")
+
+        #expect(job.processingFinishedAt != nil)
+        #expect(job.processingFinishedAt! >= job.processingStartedAt!)
+    }
+
+    @Test
     func humanLogTextDoesNotDriveProgress() {
         let job = ProcessingJob()
 
@@ -335,6 +361,23 @@ struct ProcessingJobTests {
 
         #expect(job.masteringActiveStep == .tone)
         #expect(job.completedMasteringSteps.contains(.analyze))
+    }
+
+    @Test
+    func masteringElapsedTimeStopsOnSuccess() {
+        let job = ProcessingJob()
+        let corrected = URL(fileURLWithPath: "/tmp/output.wav")
+        let mastered = URL(fileURLWithPath: "/tmp/output_mastered.wav")
+
+        job.outputFile = corrected
+        job.beginMastering()
+        #expect(job.masteringStartedAt != nil)
+        #expect(job.masteringFinishedAt == nil)
+
+        job.finishMasteringSuccess(mastered)
+
+        #expect(job.masteringFinishedAt != nil)
+        #expect(job.masteringFinishedAt! >= job.masteringStartedAt!)
     }
 
     @Test

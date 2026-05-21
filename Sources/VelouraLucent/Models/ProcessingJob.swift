@@ -192,6 +192,10 @@ final class ProcessingJob {
     var masteringStatusMessage = "待機中"
     var isProcessing = false
     var isMastering = false
+    var processingStartedAt: Date?
+    var processingFinishedAt: Date?
+    var masteringStartedAt: Date?
+    var masteringFinishedAt: Date?
     var lastError: String?
     var masteringLastError: String?
     var hasExistingOutput = false
@@ -311,6 +315,10 @@ final class ProcessingJob {
         masteringLogLines.removeAll()
         statusMessage = "処理待ち"
         masteringStatusMessage = "補正後に実行できます"
+        processingStartedAt = nil
+        processingFinishedAt = nil
+        masteringStartedAt = nil
+        masteringFinishedAt = nil
         lastError = nil
         masteringLastError = nil
         // Selecting a source file should not surface old outputs from prior runs.
@@ -338,6 +346,8 @@ final class ProcessingJob {
         lastError = nil
         logLines.removeAll()
         statusMessage = "処理中"
+        processingStartedAt = Date()
+        processingFinishedAt = nil
         activeStep = nil
         completedSteps = []
         skippedSteps = []
@@ -356,6 +366,8 @@ final class ProcessingJob {
         resetDisplayAnalysisStates(for: .mastered)
         masteringLogLines.removeAll()
         masteringStatusMessage = "補正後に実行できます"
+        masteringStartedAt = nil
+        masteringFinishedAt = nil
         masteringLastError = nil
         hasExistingMasteredOutput = false
         masteringActiveStep = nil
@@ -373,6 +385,8 @@ final class ProcessingJob {
         masteringLastError = nil
         masteringLogLines.removeAll()
         masteringStatusMessage = "マスタリング中"
+        masteringStartedAt = Date()
+        masteringFinishedAt = nil
         masteringActiveStep = nil
         completedMasteringSteps = []
         skippedMasteringSteps = []
@@ -565,6 +579,7 @@ final class ProcessingJob {
         outputFile = outputURL
         masteredOutputFile = nil
         statusMessage = "完了"
+        processingFinishedAt = Date()
         hasExistingOutput = FileManager.default.fileExists(atPath: outputURL.path(percentEncoded: false))
         completedSteps = Set(ProcessingStep.allCases).subtracting(skippedSteps)
         activeStep = nil
@@ -577,6 +592,7 @@ final class ProcessingJob {
         isMastering = false
         masteredOutputFile = outputURL
         masteringStatusMessage = "完了"
+        masteringFinishedAt = Date()
         hasExistingMasteredOutput = FileManager.default.fileExists(atPath: outputURL.path(percentEncoded: false))
         completedMasteringSteps = Set(MasteringStep.allCases).subtracting(skippedMasteringSteps)
         masteringActiveStep = nil
@@ -596,6 +612,7 @@ final class ProcessingJob {
         isProcessing = false
         lastError = message
         statusMessage = "失敗"
+        processingFinishedAt = Date()
         hasExistingOutput = outputFile.map { FileManager.default.fileExists(atPath: $0.path(percentEncoded: false)) } ?? false
         if let activeStep {
             failedSteps.insert(activeStep)
@@ -609,6 +626,7 @@ final class ProcessingJob {
         isMastering = false
         masteringLastError = message
         masteringStatusMessage = "失敗"
+        masteringFinishedAt = Date()
         hasExistingMasteredOutput = false
         if let masteringActiveStep {
             failedMasteringSteps.insert(masteringActiveStep)
