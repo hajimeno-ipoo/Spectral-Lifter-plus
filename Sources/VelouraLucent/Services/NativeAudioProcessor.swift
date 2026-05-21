@@ -1770,6 +1770,14 @@ private struct SpectralGateDenoiser: Sendable {
             highBandWeightByBin[binIndex] = min(1, max(0, Float((frequency - 8_000) / 8_000)))
             transientLiftScaleByBin[binIndex] = Self.transientProtectionLiftScale(frequency: frequency)
         }
+        let highFloorLiftByIndex = highBandMusicalProtection.floorLiftTable(
+            frameCount: spectrogram.frameCount,
+            binCount: binCount,
+            pass: pass
+        )
+        let highFloorLiftActiveIndexByBin = highFloorLiftByIndex.activeIndexByBin
+        let highFloorLiftValues = highFloorLiftByIndex.values
+        let highFloorLiftActiveBinCount = highFloorLiftByIndex.activeBinCount
 
         for frameIndex in 0..<spectrogram.frameCount {
             let transientRatio = frameEnergy[frameIndex] / max(smoothedFrameEnergy[frameIndex], 1e-6)
@@ -1801,7 +1809,10 @@ private struct SpectralGateDenoiser: Sendable {
                     granularBaseline: granularProfile[binIndex],
                     coreProtection: tuning.coreProtection
                 )
-                let highFloorLift = highBandMusicalProtection.floorLift(frameIndex: frameIndex, binIndex: binIndex, pass: pass)
+                let highFloorLiftActiveIndex = highFloorLiftActiveIndexByBin[binIndex]
+                let highFloorLift = highFloorLiftActiveIndex < 0
+                    ? 0
+                    : highFloorLiftValues[frameIndex * highFloorLiftActiveBinCount + highFloorLiftActiveIndex]
                 let protectedRawFloor = min(
                     0.995,
                     floor + highFloorLift
@@ -1965,7 +1976,20 @@ private struct DenoiseMaskBreakdownAccumulator {
     }
 }
 
-private struct HighBandMusicalProtection {
+struct HighBandMusicalProtection {
+    struct FloorLiftTable {
+        let values: [Float]
+        let activeIndexByBin: [Int]
+        let activeBinCount: Int
+
+        func value(frameIndex: Int, binIndex: Int) -> Float {
+            guard activeIndexByBin.indices.contains(binIndex) else { return 0 }
+            let activeIndex = activeIndexByBin[binIndex]
+            guard activeIndex >= 0 else { return 0 }
+            return values[frameIndex * activeBinCount + activeIndex]
+        }
+    }
+
     private struct Band {
         let lower: Double
         let upper: Double
@@ -2047,6 +2071,35 @@ private struct HighBandMusicalProtection {
         let band = bands[bandIndex]
         let passLift = pass > 1 ? band.secondPassLift : 0
         return band.frameLift[frameIndex] + passLift * min(1, band.frameLift[frameIndex] / max(band.baseLift, 1e-6))
+    }
+
+    func floorLiftTable(frameCount: Int, binCount: Int, pass: Int) -> FloorLiftTable {
+        var activeIndexByBin = Array(repeating: -1, count: binCount)
+        var activeBins: [(binIndex: Int, bandIndex: Int)] = []
+        for binIndex in 0..<binCount {
+            guard bandIndexByBin.indices.contains(binIndex),
+                  let bandIndex = bandIndexByBin[binIndex],
+                  bands.indices.contains(bandIndex)
+            else {
+                continue
+            }
+            activeIndexByBin[binIndex] = activeBins.count
+            activeBins.append((binIndex: binIndex, bandIndex: bandIndex))
+        }
+
+        var values = Array(repeating: Float.zero, count: frameCount * activeBins.count)
+        for activeIndex in activeBins.indices {
+            let bandIndex = activeBins[activeIndex].bandIndex
+            let band = bands[bandIndex]
+            let passLift = pass > 1 ? band.secondPassLift : 0
+            let baseLift = max(band.baseLift, 1e-6)
+            let activeFrameCount = min(frameCount, band.frameLift.count)
+            for frameIndex in 0..<activeFrameCount {
+                let frameLift = band.frameLift[frameIndex]
+                values[frameIndex * activeBins.count + activeIndex] = frameLift + passLift * min(1, frameLift / baseLift)
+            }
+        }
+        return FloorLiftTable(values: values, activeIndexByBin: activeIndexByBin, activeBinCount: activeBins.count)
     }
 
     private static func makeBand(

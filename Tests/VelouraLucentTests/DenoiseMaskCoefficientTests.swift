@@ -152,6 +152,42 @@ struct DenoiseMaskCoefficientTests {
         #expect(relaxedMask > normalMask)
     }
 
+    @Test
+    func highFloorLiftTableMatchesPerBinFunctionForEachPass() {
+        let sampleRate = 48_000.0
+        let signal = (0..<12_000).map { index -> Float in
+            let time = Double(index) / sampleRate
+            let body = sin(2 * Double.pi * 440 * time) * 0.22
+            let sparkle = sin(2 * Double.pi * 9_500 * time) * 0.035
+            let air = sin(2 * Double.pi * 14_000 * time) * 0.025
+            return Float(body + sparkle + air)
+        }
+        let spectrogram = SpectralDSP.stft(signal)
+        let frequencyStep = sampleRate / Double(spectrogram.fftSize)
+        let protection = HighBandMusicalProtection(
+            spectrogram: spectrogram,
+            frequencyStep: frequencyStep,
+            frameEnergy: spectrogram.frameAverageMagnitudes()
+        )
+
+        for pass in [1, 2] {
+            let table = protection.floorLiftTable(
+                frameCount: spectrogram.frameCount,
+                binCount: spectrogram.binCount,
+                pass: pass
+            )
+
+            #expect(table.activeIndexByBin.count == spectrogram.binCount)
+            #expect(table.activeBinCount < spectrogram.binCount)
+            #expect(table.values.count == spectrogram.frameCount * table.activeBinCount)
+            for frameIndex in 0..<spectrogram.frameCount {
+                for binIndex in 0..<spectrogram.binCount {
+                    #expect(table.value(frameIndex: frameIndex, binIndex: binIndex) == protection.floorLift(frameIndex: frameIndex, binIndex: binIndex, pass: pass))
+                }
+            }
+        }
+    }
+
     private func expectClose(_ actual: Float, _ expected: Float, tolerance: Float = 0.000_001) {
         #expect(abs(actual - expected) <= tolerance)
     }
