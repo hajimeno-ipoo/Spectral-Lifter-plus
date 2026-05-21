@@ -647,31 +647,38 @@ struct NativeAudioProcessor {
         let sibilanceCeiling = min(2.2, max(1.5, fallbackSibilanceReturn + 0.25))
         let fallbackUltraHighDB = bandRMSDB(signal: fallback, lower: 16_000, upper: 20_000)
         let ultraHighLiftCeilingDB = 0.25
-        let candidates: [(mix: Float, signal: AudioSignal)] = [
-            (1.0, signal),
-            (0.75, blendSignals(base: fallback, boosted: signal, mix: 0.75)),
-            (0.60, blendSignals(base: fallback, boosted: signal, mix: 0.60)),
-            (0.50, blendSignals(base: fallback, boosted: signal, mix: 0.50)),
-            (0.25, blendSignals(base: fallback, boosted: signal, mix: 0.25)),
-            (0.10, blendSignals(base: fallback, boosted: signal, mix: 0.10))
-        ]
 
-        for (index, candidate) in candidates.enumerated() {
+        func allowedCandidate(index: Int, signal candidateSignal: AudioSignal) -> Bool {
             let measurements = measurementCache.snapshot(
                 signalID: "correctionHighPreserve.candidate.\(index)",
-                signal: candidate.signal,
+                signal: candidateSignal,
                 ids: highNoiseIDs
             )
             measurementCount += 1
             let hissReturn = noiseDelta(id: NoiseMeasurementID.hiss, reference: referenceMeasurements, current: measurements)
             let shimmerReturn = noiseDelta(id: NoiseMeasurementID.shimmer, reference: referenceMeasurements, current: measurements)
             let sibilanceReturn = noiseDelta(id: NoiseMeasurementID.sibilance, reference: referenceMeasurements, current: measurements)
-            let ultraHighLift = bandRMSDB(signal: candidate.signal, lower: 16_000, upper: 20_000) - fallbackUltraHighDB
-            guard hissReturn <= hissCeiling,
-                  shimmerReturn <= shimmerCeiling,
-                  sibilanceReturn <= sibilanceCeiling,
-                  ultraHighLift <= ultraHighLiftCeilingDB
-            else { continue }
+            let ultraHighLift = bandRMSDB(signal: candidateSignal, lower: 16_000, upper: 20_000) - fallbackUltraHighDB
+            return hissReturn <= hissCeiling
+                && shimmerReturn <= shimmerCeiling
+                && sibilanceReturn <= sibilanceCeiling
+                && ultraHighLift <= ultraHighLiftCeilingDB
+        }
+
+        if allowedCandidate(index: 0, signal: signal) {
+            logger?.log("補正後高域保持/測定回数: \(measurementCount)")
+            return signal
+        }
+
+        let blendedCandidates: [(index: Int, mix: Float, signal: AudioSignal)] = [
+            (1, 0.75, blendSignals(base: fallback, boosted: signal, mix: 0.75)),
+            (2, 0.60, blendSignals(base: fallback, boosted: signal, mix: 0.60)),
+            (3, 0.50, blendSignals(base: fallback, boosted: signal, mix: 0.50)),
+            (4, 0.25, blendSignals(base: fallback, boosted: signal, mix: 0.25)),
+            (5, 0.10, blendSignals(base: fallback, boosted: signal, mix: 0.10))
+        ]
+
+        for candidate in blendedCandidates where allowedCandidate(index: candidate.index, signal: candidate.signal) {
             if candidate.mix < 1 {
                 logger?.log("補正後高域保持: ノイズ/超高域戻り抑制 mix \(String(format: "%.2f", candidate.mix))")
             }
