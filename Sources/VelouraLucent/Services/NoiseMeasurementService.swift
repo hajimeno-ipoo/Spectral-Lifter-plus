@@ -176,14 +176,53 @@ enum NoiseMeasurementService {
         cancellationCheck: @escaping () throws -> Void
     ) throws -> [Float] {
         guard lower < upper, upper < sampleRate * 0.5 else { return Array(repeating: 0, count: samples.count) }
-        var filtered = samples
+        var input = samples
+        var output = Array(repeating: Float.zero, count: samples.count)
+        let highPassAlpha = highPassAlpha(cutoff: lower, sampleRate: sampleRate)
+        let lowPassAlpha = lowPassAlpha(cutoff: upper, sampleRate: sampleRate)
         for _ in 0..<4 {
             try cancellationCheck()
-            filtered = SpectralDSP.highPass(filtered, cutoff: lower, sampleRate: sampleRate)
+            highPass(input, into: &output, alpha: highPassAlpha)
+            swap(&input, &output)
             try cancellationCheck()
-            filtered = SpectralDSP.lowPass(filtered, cutoff: upper, sampleRate: sampleRate)
+            lowPass(input, into: &output, alpha: lowPassAlpha)
+            swap(&input, &output)
         }
-        return filtered
+        return input
+    }
+
+    private static func lowPassAlpha(cutoff: Double, sampleRate: Double) -> Float {
+        let rc = 1.0 / (2.0 * Double.pi * cutoff)
+        let dt = 1.0 / sampleRate
+        return Float(dt / (rc + dt))
+    }
+
+    private static func highPassAlpha(cutoff: Double, sampleRate: Double) -> Float {
+        let rc = 1.0 / (2.0 * Double.pi * cutoff)
+        let dt = 1.0 / sampleRate
+        return Float(rc / (rc + dt))
+    }
+
+    private static func lowPass(_ input: [Float], into output: inout [Float], alpha: Float) {
+        guard input.count > 1 else {
+            output = input
+            return
+        }
+        output[0] = input[0]
+        for index in 1..<input.count {
+            output[index] = output[index - 1] + alpha * (input[index] - output[index - 1])
+        }
+    }
+
+    private static func highPass(_ input: [Float], into output: inout [Float], alpha: Float) {
+        guard input.count > 1 else {
+            output = input
+            return
+        }
+        output[0] = input[0]
+        for index in 1..<input.count {
+            output[index] = alpha * (output[index - 1] + input[index] - input[index - 1])
+        }
     }
 
     private static func quietBandNoiseFloorDB(
