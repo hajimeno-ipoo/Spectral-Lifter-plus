@@ -591,12 +591,16 @@ struct NativeAudioProcessor {
             Rule(label: "12-16kHz", lower: 12_000, upper: 16_000, maxAbsoluteDropDB: 0.20, maxBoostDB: 0.85, minimumUsefulBoostDB: 0.15),
             Rule(label: "16kHz以上", lower: 16_000, upper: 20_000, maxAbsoluteDropDB: 2.20, maxBoostDB: 0.30, minimumUsefulBoostDB: 0.25)
         ]
+        let referenceMono = reference.monoMixdown()
+        let referenceBandRMSDB = rules.map { rule in
+            bandRMSDB(mono: referenceMono, sampleRate: reference.sampleRate, lower: rule.lower, upper: rule.upper)
+        }
 
         var current = signal
         var didApply = false
-        for rule in rules {
+        for (ruleIndex, rule) in rules.enumerated() {
             let currentDB = bandRMSDB(signal: current, lower: rule.lower, upper: rule.upper)
-            let referenceDB = bandRMSDB(signal: reference, lower: rule.lower, upper: rule.upper)
+            let referenceDB = referenceBandRMSDB[ruleIndex]
             guard currentDB.isFinite, referenceDB.isFinite else { continue }
 
             let targetDB = referenceDB - rule.maxAbsoluteDropDB
@@ -794,13 +798,17 @@ struct NativeAudioProcessor {
     }
 
     private func bandRMSDB(signal: AudioSignal, lower: Double, upper: Double) -> Double {
-        let upperBound = min(upper, signal.sampleRate * 0.5 - 100)
-        guard lower < upperBound else { return -120 }
         let mono = signal.monoMixdown()
+        return bandRMSDB(mono: mono, sampleRate: signal.sampleRate, lower: lower, upper: upper)
+    }
+
+    private func bandRMSDB(mono: [Float], sampleRate: Double, lower: Double, upper: Double) -> Double {
+        let upperBound = min(upper, sampleRate * 0.5 - 100)
+        guard lower < upperBound else { return -120 }
         let band = SpectralDSP.lowPass(
-            SpectralDSP.highPass(mono, cutoff: lower, sampleRate: signal.sampleRate),
+            SpectralDSP.highPass(mono, cutoff: lower, sampleRate: sampleRate),
             cutoff: upperBound,
-            sampleRate: signal.sampleRate
+            sampleRate: sampleRate
         )
         let meanSquare = band.reduce(0.0) { partial, sample in
             partial + Double(sample * sample)
